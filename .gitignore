@@ -1,0 +1,16 @@
+*/__pycache__/*
+*.gz
+*.xml
+*.h5
+*.xmf
+*.out
+*.pyc
+.DS_Store
+*.mat
+*.msh
+*.gif
+TESTS/*
+.idea/*
+docs/build/*
+*.run
+*.sh
