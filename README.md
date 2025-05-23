@@ -53,3 +53,7 @@ The code builds upon previous implementations of the RB method for steady ellipt
 written by [Luca Pegolotti](https://www.researchgate.net/profile/Luca_Pegolotti) and 
 [Niccolo' Dal Santo](https://www.researchgate.net/profile/Niccolo_Dal_Santo) 
 at [EPFL](https://www.epfl.ch/en/).
+
+## Funding
+This work was funded by the \emph{Swiss National Science Foundation} (grant agreement No 200021\_197021, 
+"Data--driven approximation of hemodynamics by combined reduced order modeling and deep neural networks").
