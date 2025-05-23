@@ -55,5 +55,6 @@ written by [Luca Pegolotti](https://www.researchgate.net/profile/Luca_Pegolotti)
 at [EPFL](https://www.epfl.ch/en/).
 
 ## Funding
-This work was funded by the \emph{Swiss National Science Foundation} (grant agreement No 200021\_197021, 
-"Data--driven approximation of hemodynamics by combined reduced order modeling and deep neural networks").
+This work was funded by the *Swiss National Science Foundation*, 
+[grant agreement No 200021_197021](https://data.snf.ch/grants/grant/197021), 
+"Data--driven approximation of hemodynamics by combined reduced order modeling and deep neural networks".
