@@ -52,7 +52,7 @@ class ProperOrthogonalDecomposition:
     def singular_values(self):
         return self.M_singular_values
 
-    def __call__(self, _snapshots_matrix, _tol=1e-4, _norm_matrix=None, random=True, maxN=100):
+    def __call__(self, _snapshots_matrix, _tol=1e-4, _norm_matrix=None):
         """Call method of the class, which allows to compute the Proper Orthogonal Decomposition of the snapshots matrix
         given as input. The POD is performed by first computing the Singular Value Decomposition (SVD) of the input
         matrix and lately performing a dimensionality reduction, using the squared l2-norm of the singular values as
@@ -73,11 +73,6 @@ class ProperOrthogonalDecomposition:
         :param _norm_matrix: matrix defining a norm with respect to which the resulting bases vectors will be
           orthonormalized. If None, the orthonormalization is performed in l2-norm. Defaults to None.
         :type _norm_matrix: numpy.ndarray or scipy.sparse or NoneType
-        :param random: if True, the SVD is performed with randomized algorithm, otherwise the deterministic one is used.
-            Defaults to True.
-        :type random: bool
-        :param maxN: maximum number of basis vectors to be computed. Defaults to 100.
-        :type maxN: int
         :return: the result of the POD
         :rtype: numpy.ndarray
         """
@@ -92,12 +87,15 @@ class ProperOrthogonalDecomposition:
             _norm_matrix = csc_matrix(_norm_matrix)
 
         self.M_snapshots_matrix = _snapshots_matrix
-        self.M_Nh= self.M_snapshots_matrix.shape[0]
+        self.M_Nh = self.M_snapshots_matrix.shape[0]
         self.M_ns = self.M_snapshots_matrix.shape[1]
 
         if _norm_matrix is not None:
-            assert _norm_matrix.shape[0] == _norm_matrix.shape[1] == self.M_Nh, \
-                f"The norm matrix for the POD must be a 2D numpy array of shape {self.M_Nh} x {self.M_Nh}"
+            try:
+                assert _norm_matrix.shape[0] == _norm_matrix.shape[1] == self.M_Nh
+            except AssertionError:
+                raise TypeError(f"The norm matrix for the POD must be a 2D numpy array of shape "
+                                f"{self.M_Nh} x {self.M_Nh}")
 
             factor = cholesky(_norm_matrix)
 
@@ -114,35 +112,34 @@ class ProperOrthogonalDecomposition:
                 raise ValueError("Impossible to perform custom norm POD; the snapshots matrix is too big!")
 
         if PCA is not None:
-            pca = PCA(n_components=min([maxN, self.M_snapshots_matrix.shape[0], self.M_snapshots_matrix.shape[1]]),
-                      svd_solver='auto' if random else 'full', random_state=0).fit(self.M_snapshots_matrix.T)
+            # 200 is set as maximal number of components --> change if necessary !!
+            pca = PCA(n_components=min([200, self.M_snapshots_matrix.shape[0], self.M_snapshots_matrix.shape[1]]),
+                      svd_solver='auto', random_state=0).fit(self.M_snapshots_matrix.T)
             U, s = pca.components_.T, pca.singular_values_
         else:
             # OLD CODE (deterministic)
-            if random:
-                logger.warning("Randomized SVD is not available, deterministic SVD is used!")
             U, s, _ = np.linalg.svd(self.M_snapshots_matrix, full_matrices=False)
 
         if _norm_matrix is not None:
             U = factor.apply_Pt(factor.solve_Lt(U, use_LDLt_decomposition=False))
 
-        cumulative_energy = np.cumsum(s**2)
-        total_energy = cumulative_energy[-1]
+        total_energy = np.dot(s, np.transpose(s))
         logger.debug(f"The total energy of the field is {total_energy:.4e}")
 
         self.M_N = 0
-        while cumulative_energy[self.M_N] / total_energy < 1 - _tol ** 2 and self.M_N < s.shape[0]:
-            logger.debug(f"N = {self.M_N} --- "
-                         f"Energy : {cumulative_energy[self.M_N]:.4e} --- "
-                         f"Relative energy: {(cumulative_energy[self.M_N] / total_energy):.4e} --- "
-                         f"Singular value: {s[self.M_N]:.4e}")
+        cumulative_energy = 0.0
+        record_cumulative_energy = np.ones(self.M_ns)
+
+        while cumulative_energy / total_energy < 1. - _tol ** 2 and self.M_N < self.M_ns:
+            logger.debug(f"N = {self.M_N} -- "
+                         f"Relative cumulative energy: {(cumulative_energy / total_energy):.4e}; "
+                         f"Current SV {s[self.M_N]:.4e}")
+
+            record_cumulative_energy[self.M_N] = cumulative_energy
+            cumulative_energy = cumulative_energy + s[self.M_N] * s[self.M_N]  # add the energy of next basis
             self.M_N += 1  # add a basis in the count
 
         logger.info(f"Final N is {self.M_N}")
-
-        if PCA is None and self.M_N >= maxN:
-            logger.warning(f"The number of basis functions ({self.M_N}) exceeded the maximum allowed ({maxN}) "
-                           f"with the randomized approach.")
 
         self.M_basis = U[:, :self.M_N]
         self.M_basis[np.abs(self.M_basis) < 1e-14] = 0.0
@@ -156,5 +153,3 @@ class ProperOrthogonalDecomposition:
 __all__ = [
     "ProperOrthogonalDecomposition"
 ]
-
-

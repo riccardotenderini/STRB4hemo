@@ -177,7 +177,7 @@ class RbManagerSRB_TFO_Stokes(rbmstS.RbManagerSpaceTimeStokes):
             sol = np.reshape(self.M_un[self.M_N['velocity']:self.M_N['velocity'] + self.M_N['pressure']],
                              (self.M_N_time['pressure'], self.M_N_space['pressure'])).T
         elif field == "lambda":
-            assert n < self.M_n_coupling
+            assert n < self.M_n_coupling, f"Invalid coupling index {n}"
             sol = np.reshape(self.M_un[self.M_N['velocity'] + self.M_N['pressure'] + self.M_N_lambda_cumulative[n]:
                                        self.M_N['velocity'] + self.M_N['pressure'] + self.M_N_lambda_cumulative[n + 1]],
                              (self.M_N_time['lambda'][n], self.M_N_space['lambda'][n])).T
@@ -190,6 +190,10 @@ class RbManagerSRB_TFO_Stokes(rbmstS.RbManagerSpaceTimeStokes):
         """
         MODIFY
         """
+
+        if self.M_utildeh:
+            logger.warning("FEM solution is already available!")
+            return
 
         if fields is None:
             fields = {"velocity", "pressure", "lambda"}
@@ -278,13 +282,9 @@ class RbManagerSRB_TFO_Stokes(rbmstS.RbManagerSpaceTimeStokes):
         return lhs_block
 
     def _update_RHS(self, rhs_blocks, sol, flow_rates, ind_t, get_blocks=False):
+
         u_old = self._combine_old_solutions(sol)[:self.M_N_space['velocity']]
         rhs_blocks[0] = self.M_M_matrix.dot(u_old)
-
-        # this is based on explicit implementation with 2nd order extrapolation
-        # if self.M_has_resistance:
-        #     u_extr = self._extrapolate_solution(sol)[:self.M_N_space['velocity']]
-        #     rhs_blocks[0] += self.M_bdf_rhs * self.dt * self.M_R_matrix.dot(u_extr)
 
         rhs_blocks[2] = np.hstack([self.M_RHS_vector[n] * flow_rates[ind_t, n]
                                    for n in range(self.M_n_coupling)])
@@ -370,7 +370,7 @@ class RbManagerSRB_TFO_Stokes(rbmstS.RbManagerSpaceTimeStokes):
 
         return sol, times
 
-    def test_time_marching(self, param_nbs, is_test=False, ss_ratio=1, cycles_specifics=None):
+    def test_time_marching(self, param_nbs, is_test=False, ss_ratio=1, cycles_specifics=None, compute_errors=True):
         """
         Solve the S-reduced problem for param numbers in param_nbs
         """
@@ -387,6 +387,9 @@ class RbManagerSRB_TFO_Stokes(rbmstS.RbManagerSpaceTimeStokes):
 
         solves_cnt = 0
         for param_nb in param_nbs:
+
+            self.load_IC(param_nb, is_test=is_test, ss_ratio=ss_ratio)
+
             start = time.perf_counter()
 
             logger.info(f"Considering snapshot number {param_nb}")
@@ -396,7 +399,7 @@ class RbManagerSRB_TFO_Stokes(rbmstS.RbManagerSpaceTimeStokes):
 
             logger.debug(f"Considering parameter values {param}")
 
-            solution, times = self.time_marching(param,  **cycles_specifics)
+            solution, times = self.time_marching(param, **cycles_specifics)
 
             if solution is None: continue  # solver failed
 
@@ -404,6 +407,9 @@ class RbManagerSRB_TFO_Stokes(rbmstS.RbManagerSpaceTimeStokes):
             elapsed_time = time.perf_counter() - start
             logger.info(f"Online execution wall time: {elapsed_time :.4f} s")
             self.M_online_mean_time += elapsed_time
+
+            results_dir = os.path.join(self.M_results_path, f'param{param_nb}' + ('_test' if is_test else ''))
+            gen_utils.create_dir(results_dir)
 
             if cycles_specifics['n_cycles'] > 1:
                 windows = times[len(times)//cycles_specifics['n_cycles']-1::len(times)//cycles_specifics['n_cycles']]
@@ -416,18 +422,18 @@ class RbManagerSRB_TFO_Stokes(rbmstS.RbManagerSpaceTimeStokes):
                 self._save_flow_rates(inflow_rates, outflow_rates, times, windows, param_nb, is_test=is_test)
 
                 if self.M_save_results:
-                    results_dir = os.path.join(self.M_results_path, f'param{param_nb}' + ('_test' if is_test else ''))
-                    gen_utils.create_dir(results_dir)
-
                     self._save_solution(param_nb, results_dir, is_test=is_test, n_cycles=cycles_specifics['n_cycles'],
                                         save_reduced=False, save_full=True, save_FOM=False, save_lambda=False)
 
-            else:
+            if cycles_specifics['n_cycles'] == self.M_N_periods and compute_errors:
                 logger.debug("Computing the errors")
                 self.M_cur_errors = self.compute_online_errors(param_nb, is_test=is_test, ss_ratio=ss_ratio)
                 self._update_errors()
 
-                self._save_results_snapshot(param_nb, self.M_cur_errors, is_test=is_test)
+                if cycles_specifics['n_cycles'] == 1:
+                    self._save_results_snapshot(param_nb, self.M_cur_errors, is_test=is_test)
+                else:
+                    self._save_errors(self.M_cur_errors, results_dir)
 
         if solves_cnt > 0:
             self.M_relative_error = {key: self.M_relative_error[key] / solves_cnt for key in self.M_relative_error}

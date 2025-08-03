@@ -39,8 +39,8 @@ class RbManagerSpaceTimeNavierStokes(rbmstS.RbManagerSpaceTimeStokes):
         self.M_N_components_NLTerm = 0
         self.M_N_components_NLJacobian = 0
         self.M_NLterm_offline_time_tensor_uuu = np.zeros(0)
-        self.M_NLterm_offline_time_tensor_uuu_IC_1 = np.zeros(0)
-        self.M_NLterm_offline_time_tensor_uuu_IC_2 = np.zeros(0)
+        # self.M_NLterm_offline_time_tensor_uuu_IC_1 = np.zeros(0)
+        # self.M_NLterm_offline_time_tensor_uuu_IC_2 = np.zeros(0)
 
         self.M_u_IG = np.zeros(0)
         self.M_newton_specifics = dict()
@@ -148,15 +148,15 @@ class RbManagerSpaceTimeNavierStokes(rbmstS.RbManagerSpaceTimeStokes):
                                                           self.M_basis_time['velocity'],
                                                           self.M_basis_time['velocity'])
 
-        self.M_NLterm_offline_time_tensor_uuu_IC_1 = np.einsum('ai,aj,ak->ijk',
-                                                               self.M_basis_time_IC.T,
-                                                               self.M_basis_time['velocity'],
-                                                               self.M_basis_time['velocity'])
-
-        self.M_NLterm_offline_time_tensor_uuu_IC_2 = np.einsum('ai,aj,ak->ijk',
-                                                               self.M_basis_time_IC.T,
-                                                               self.M_basis_time_IC.T,
-                                                               self.M_basis_time['velocity'])
+        # self.M_NLterm_offline_time_tensor_uuu_IC_1 = np.einsum('ai,aj,ak->ijk',
+        #                                                        self.M_basis_time_IC.T,
+        #                                                        self.M_basis_time['velocity'],
+        #                                                        self.M_basis_time['velocity'])
+        #
+        # self.M_NLterm_offline_time_tensor_uuu_IC_2 = np.einsum('ai,aj,ak->ijk',
+        #                                                        self.M_basis_time_IC.T,
+        #                                                        self.M_basis_time_IC.T,
+        #                                                        self.M_basis_time['velocity'])
 
         return
 
@@ -338,6 +338,25 @@ class RbManagerSpaceTimeNavierStokes(rbmstS.RbManagerSpaceTimeStokes):
 
         return None if not get_full_output else (nn_indices, weights)
 
+    def __initialize_PODI(self):
+        """Initialize the RBF interpolators for the initial guess computation via proper orthogonal decomposition"""
+
+        logger.info("Initializing RBF interpolation")
+
+        params = self._normalize_parameter(self.M_offline_ns_parameters, idxs=self.M_IG_idxs)
+        rbf_specs = {'kernel': 'thin_plate_spline', 'smoothing': 1e-2, 'degree': 1, 'epsilon': 1.0}
+
+        try:
+            self.M_u_IG_rbf['velocity'] = RBFInterpolator(params, self.M_snapshots_hat['velocity'].T, **rbf_specs)
+            self.M_u_IG_rbf['pressure'] = RBFInterpolator(params, self.M_snapshots_hat['pressure'].T, **rbf_specs)
+            self.M_u_IG_rbf['lambda'] = [None] * self.M_n_coupling
+            for n in range(self.M_n_coupling):
+                self.M_u_IG_rbf['lambda'][n] = RBFInterpolator(params, self.M_snapshots_hat['lambda'][n].T, **rbf_specs)
+        except ValueError:
+            logger.warning("PODI interpolation cannot be used in this context!")
+
+        return
+
     def _compute_IG_with_PODI(self, _param):
         """Compute the initial guess for the Newton method via proper orthogonal decomposition interpolation.
 
@@ -351,16 +370,7 @@ class RbManagerSpaceTimeNavierStokes(rbmstS.RbManagerSpaceTimeStokes):
             self.import_generalized_coordinates()
 
         if not self.M_u_IG_rbf:
-            logger.info("Initializing RBF interpolation")
-
-            params = self._normalize_parameter(self.M_offline_ns_parameters, idxs=self.M_IG_idxs)
-            rbf_specs = {'kernel': 'thin_plate_spline', 'smoothing': 1e-2, 'degree': 1, 'epsilon': 1.0}
-
-            self.M_u_IG_rbf['velocity'] = RBFInterpolator(params, self.M_snapshots_hat['velocity'].T, **rbf_specs)
-            self.M_u_IG_rbf['pressure'] = RBFInterpolator(params, self.M_snapshots_hat['pressure'].T, **rbf_specs)
-            self.M_u_IG_rbf['lambda'] = [None] * self.M_n_coupling
-            for n in range(self.M_n_coupling):
-                self.M_u_IG_rbf['lambda'][n] = RBFInterpolator(params, self.M_snapshots_hat['lambda'][n].T, **rbf_specs)
+            self.__initialize_PODI()
 
         _param = self._normalize_parameter(_param[None], idxs=self.M_IG_idxs)
         u_hat = self.M_u_IG_rbf['velocity'](_param)[0]
@@ -393,18 +403,6 @@ class RbManagerSpaceTimeNavierStokes(rbmstS.RbManagerSpaceTimeStokes):
         """
 
         self.M_u_IG = self.get_zero_vector()
-        return
-
-    def _setup_IG_indices(self):
-        """
-        Specify which parameters should be considered to compute the initial guess.
-        """
-
-        # TODO: this is very simple... consider only inflow parameters, unless there are clots
-        # if 'inflow' in self.M_parametrizations and 'clot' not in self.M_parametrizations:
-        #     idxs = self.get_param_indices()['inflow']  # consider only inflow parameters for IG, if possible
-        #     self.M_IG_idxs = np.arange(idxs[0], idxs[1]).astype(int)
-
         return
 
     @property
@@ -507,6 +505,8 @@ class RbManagerSpaceTimeNavierStokes(rbmstS.RbManagerSpaceTimeStokes):
                     self.get_generalized_coordinates(n_snapshots=_ns, ss_ratio=ss_ratio, save_flag=True)
                     logger.debug(f"Computing space-time generalized coordinates performed in {(time.time()-start):.4f} s")
 
+                self.__initialize_PODI()
+
         else:
             start = time.time()
             logger.info('Building space-reduced structures')
@@ -525,6 +525,8 @@ class RbManagerSpaceTimeNavierStokes(rbmstS.RbManagerSpaceTimeStokes):
                 logger.info('Computing space-time generalized coordinates of FOM snapshots')
                 self.get_generalized_coordinates(n_snapshots=_ns, ss_ratio=ss_ratio, save_flag=True)
                 logger.debug(f"Computing space-time generalized coordinates performed in {(time.time()-start):.4f} s")
+
+                self.__initialize_PODI()
 
         return
 
@@ -552,8 +554,8 @@ class RbManagerSpaceTimeNavierStokes(rbmstS.RbManagerSpaceTimeStokes):
 
         super()._reset_errors()
 
-        self.M_relative_error['IG-velocity'], self.M_relative_error['IG-velocity-l2'] = np.zeros(self.M_Nt), 0.0
-        self.M_relative_error['IG-pressure'], self.M_relative_error['IG-pressure-l2'] = np.zeros(self.M_Nt), 0.0
+        for field in set(self.M_valid_fields) - {'lambda'}:
+            self.M_relative_error[f'IG-{field}'], self.M_relative_error[f'IG-{field}-l2'] = np.zeros(self.M_Nt), 0.0
 
         return
 
@@ -568,10 +570,9 @@ class RbManagerSpaceTimeNavierStokes(rbmstS.RbManagerSpaceTimeStokes):
         if not is_IG:
             super()._update_errors(N=N)
         else:
-            self.M_relative_error['IG-velocity'] += self.M_cur_errors['velocity'] / N
-            self.M_relative_error['IG-velocity-l2'] += self.M_cur_errors['velocity-l2'] / N
-            self.M_relative_error['IG-pressure'] += self.M_cur_errors['pressure'] / N
-            self.M_relative_error['IG-pressure-l2'] += self.M_cur_errors['pressure-l2'] / N
+            for field in set(self.M_valid_fields) - {'lambda'}:
+                self.M_relative_error[f'IG-{field}'] += self.M_cur_errors[field] / N
+                self.M_relative_error[f'IG-{field}-l2'] += self.M_cur_errors[f'{field}-l2'] / N
 
         return
 
@@ -588,8 +589,6 @@ class RbManagerSpaceTimeNavierStokes(rbmstS.RbManagerSpaceTimeStokes):
         """
 
         assert _param is not None, "Parameter value not provided in input"
-
-        # self._setup_IG_indices()
 
         tol = (self.M_newton_specifics['tolerance'] ** 2 if self.M_reduction_method == "ST-PGRB"
                else self.M_newton_specifics['tolerance'])
@@ -631,12 +630,13 @@ class RbManagerSpaceTimeNavierStokes(rbmstS.RbManagerSpaceTimeStokes):
             return
 
         # define initial guess
-        # if self.M_un.size > 0:
-        #     self.M_u_IG = self.M_un  # use solution at previous cycle as IG for the next cycle
-        # else:
-        self.compute_initial_guess(_param,
-                                   method=self.M_newton_specifics['IG mode'],
-                                   k=self.M_newton_specifics['neighbors number'])
+        if self.M_un.size > 0:
+            pass  # use available initial guess for all cycles
+            # self.M_u_IG = self.M_un  # use solution at previous cycle as IG for the next cycle
+        else:
+            self.compute_initial_guess(_param,
+                                       method=self.M_newton_specifics['IG mode'],
+                                       k=self.M_newton_specifics['neighbors number'])
 
         # call Newton method and compute solution
         self.M_un, self.M_solver_converged = my_newton(residual, jacobian, self.M_u_IG.copy(),
@@ -656,8 +656,9 @@ class RbManagerSpaceTimeNavierStokes(rbmstS.RbManagerSpaceTimeStokes):
         if data is None:
             data = dict()
 
-        data[("IG-" if is_IG else "") + "velocity"] = errors['velocity-l2']
-        data[("IG-" if is_IG else "") + "pressure"] = errors['pressure-l2']
+        for field in set(self.M_valid_fields) - {'lambda'}:
+            data[("IG-" if is_IG else "") + field] = errors[field + '-l2']
+
         for n in range(self.M_n_coupling):
             data[("IG-" if is_IG else "") + f"Lagrange multipliers {n}"] = errors['lambda-l2'][n]
 

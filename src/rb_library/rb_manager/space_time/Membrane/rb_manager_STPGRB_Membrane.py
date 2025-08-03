@@ -126,10 +126,6 @@ class RbManagerSTPGRBMembrane(rbmstpgrbNS.RbManagerSTPGRBNavierStokes,
 
         logger.info("Projecting FEM structures onto the reduced subspace in space; this may take some time...")
 
-        # temporary updating velocity norm to get a well conditioned system
-        # avg_bd_matrix = FEM_matrices['Mbd'] + sum(FEM_matrices['Abd'])  # TODO: remove BCs from these matrices !!
-        # self.__update_velocity_norm(avg_bd_matrix)
-
         matrices = rbmstpgrbNS.RbManagerSTPGRBNavierStokes._assemble_right_reduced_structures(self)
 
         matrices['Abd'], matrices['XAbd'] = [], []
@@ -449,7 +445,7 @@ class RbManagerSTPGRBMembrane(rbmstpgrbNS.RbManagerSTPGRBNavierStokes,
             self.M_Blocks_param_affine_fun['structure'][0].extend([lambda mu, k=k, kk=kk: mu[k+1]*mu[kk+1]
                                                                    for k in range(3) for kk in range(3)])
 
-            if self._has_IC():  # TODO: to remove !!
+            if self._has_IC():
                 self.M_f_Blocks_param_affine_fun['structure'][0].extend([lambda mu: mu[0]**2])
                 self.M_f_Blocks_param_affine_fun['structure'][0].extend([lambda mu, k=k: mu[0]*mu[k+1]
                                                                          for k in range(3)])

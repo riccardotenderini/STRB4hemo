@@ -191,14 +191,12 @@ class RbManagerUnsteady(rbm.RbManager):
         try:
             assert snapshots_matrix.shape[0] > 0
         except AssertionError:
-            logger.critical("Impossible to get the snapshots. You need to construct or import them in advance")
-            raise ValueError
+            raise ValueError("Impossible to get the snapshots. You need to construct or import them in advance")
 
         try:
             assert self.M_Nt is not None and self.M_Nt > 0
         except AssertionError:
-            logger.critical("The number of time instances has not been defined!")
-            raise ValueError
+            raise ValueError("The number of time instances has not been defined!")
 
         if timesteps is not None and type(timesteps) is int:
             timesteps = [timesteps]

@@ -17,31 +17,41 @@ logging.config.fileConfig(log_file_path, disable_existing_loggers=False)
 logger = logging.getLogger(__name__)
 
 
-def _theta_a(_param, _q):
-    """ MODIFY
+def tb_theta_a(_param, _q):
+    """MODIFY
     """
-    assert _q == 0, (f"-Stokes problem has 1 parameter-dependent function associated to the stiffness "
-                     f"matrix operator. Index {_q} is not a valid index")
+    try:
+        assert _q == 0
+    except AssertionError:
+        raise ValueError(f"-Stokes problem has 1 parameter-dependent function associated to the stiffness "
+                         f"matrix operator. Index {_q} is not a valid index")
+   
     return 1.0
 
 
-def _full_theta_a(_param):
+def tb_full_theta_a(_param):
     """MODIFY
     """
-    return np.ones(len(_param))
+    diffusions = np.ones(len(_param))
+    return diffusions
 
 
-def _theta_f(_param, _q):
+def tb_theta_f(_param, _q):
     """MODIFY
     """
-    assert _q == 0, (f"-Stokes problem has 1 parameter-dependent function associated to the stiffness "
-                     f"matrix operator. Index {_q} is not a valid index")
+
+    try:
+        assert _q == 0
+    except AssertionError:
+        raise Exception(f"-Stokes problem has 1 parameter-dependent functions associated to the right-hand "
+                        f"side vector operator. Index {_q} is not a valid index")
     return 1.0
 
 
-def _full_theta_f(_param):
+def tb_full_theta_f(_param):
     """MODIFY
     """
+
     return np.array([0.0])
 
 
@@ -59,19 +69,19 @@ class StokesProblem(fpu.FomProblemUnsteady):
     def define_theta_functions(self):
         """MODIFY
         """
-        self.M_theta_a = _theta_a
-        self.M_theta_f = _theta_f
+        self.M_theta_a = tb_theta_a
+        self.M_theta_f = tb_theta_f
 
-        self.M_full_theta_a = _full_theta_a
-        self.M_full_theta_f = _full_theta_f
+        self.M_full_theta_a = tb_full_theta_a
+        self.M_full_theta_f = tb_full_theta_f
 
         return
 
 
 __all__ = [
-    "_theta_a",
-    "_theta_f",
-    "_full_theta_a",
-    "_full_theta_f",
+    "tb_theta_a",
+    "tb_theta_f",
+    "tb_full_theta_a",
+    "tb_full_theta_f",
     "StokesProblem"
 ]

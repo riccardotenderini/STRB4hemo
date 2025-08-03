@@ -12,14 +12,15 @@ def create_directory_if_not_existing(directory):
 ######################################## PROBLEM CONFIGURATION ########################################################
 #######################################################################################################################
 
-root = os.path.normpath('/home/riccardo/Desktop/PhD/MyRepos/STRB4hemo')  # TO SET --> root of the project directory
-root_tests = os.path.normpath('/home/riccardo/Desktop/PhD/MyRepos/STRB4hemo/TESTS/')  # TO SET root of the tests directory
+root = os.path.normpath('/home/riccardo/Desktop/PDE-DNN/')  # root of the project directory --> TO BE SET
+root_tests = os.path.normpath('/home/riccardo/Desktop/PDE-DNN/TESTS/')  # root of the tests directory --> TO BE SET
+matlab_library_path = os.path.join(root, 'feamat')  # root to the Matlab library
 
 problem_type = "Unsteady"  # type of the problem --> choose between steady and unsteady
-problem_name = "Stokes"  # name of the problem --> choose between Stokes, Navier-Stokes, Navier-Stokes_Membrane
+problem_name = "Stokes"  # name of the problem --> used to create the directory structure
 
 # root to the directory storing the data and where the results are saved
-root_test = os.path.join(root_tests, "RB", problem_type)
+root_test = os.path.join(root_tests, os.path.normpath("RB/" + str(problem_type) + "/"))
 create_directory_if_not_existing(root_test)
 
 if problem_type == "Steady":
@@ -32,16 +33,16 @@ elif problem_type == "Unsteady":
     n_weak_inlets = 1  # number of weak inlet Dirichlet boundaries   --> 1 for tube, 2 for bifurcation, 2 for bypass
     n_weak_outlets = 0  # number of weak outlet Dirichlet boundaries --> 0 for tube, 0 for bifurcation, 1 for bypass
 
-    parametrizations = ['inflow']  # list of parametrizations
+    parametrizations = ['inflow']  # list of parametrizations to be considered in the test
     flow_type = 'default'  # type of flow to be imposed
     parametrization_name = ("" + (flow_type if 'inflow' in parametrizations else "") +
                             ("+clot" if 'clot' in parametrizations else ""))
 
     if flow_type == 'default':
-        flow_specs = {'T': 0.80 + 0.00,
-                      'Nt': 80,
-                      'Nt_ramp': 0,
-                      'N_periods': 1}
+        flow_specs = {'T': 1.00 + 0.00,  # final time of the flow rate
+                      'Nt': 50,          # number of time steps in the flow rate
+                      'Nt_ramp': 0,      # number of time steps to ramp up the flow rate
+                      'N_periods': 1}    # number of flow rate periods
     elif flow_type == 'systolic':
         flow_specs = {'T': 0.37 + 0.05,
                       'Nt': 43,
@@ -60,10 +61,11 @@ elif problem_type == "Unsteady":
     else:
         raise ValueError(f"Unrecognized flow rate type {flow_type}")
 
-    N_periods = 1  # number of periods (e.g. heartbeats) in the flow rate of FOM data
-    cycles_specifics = {'n_cycles': 1,  # number of periods to be simulated
-                        'update_T': False,  # change period duration across cycles
-                        'update_params': False}  # update parameters across cycles
+    N_periods = 4  # number of periods (e.g. heartbeats) in the flow rate of FOM data, including the first one
+    cycles_specifics = {'n_cycles': 4,  # number of cycles to be considered in the offline phase
+                        'update_T': False,  # whether to update the final time across cycles
+                        'update_params': False}  # whether to update the parametrization across cycles
+    Nt_IC = 50  # number of timesteps to skip to retrieve the initial condition
     time_subsample_ratio = 1  # subsampling ratio to apply over discrete temporal evaluations
                 
     # specifics of the fom problem to be solved    
@@ -80,28 +82,28 @@ elif problem_type == "Unsteady":
     used_norm = "P"  # norm to be considered for residual minimization in the ST-PGRB method, within {'X', 'P', 'l2'}
     use_LU = False  # use LU factorization to speed up solve across multiple parameter instances
 
-    n_snapshots = 25  # number of snapshots used to assemble the reduced bases
+    n_snapshots = 1  # number of snapshots used to assemble the reduced bases
 
-    tolerances = dict()  # dictionary of POD tolerances
-    tolerances['velocity-space'] = 1e-3
-    tolerances['velocity-time'] = 1e-3
-    tolerances['pressure-space'] = 1e-3
-    tolerances['pressure-time'] = 1e-3
-    tolerances['lambda-space'] = 1e-5
-    tolerances['lambda-time'] = 1e-3
+    tolerances = dict()  # POD tolerances
+    tolerances['velocity-space'] = 1e-4
+    tolerances['velocity-time'] = 1e-5
+    tolerances['pressure-space'] = 1e-4
+    tolerances['pressure-time'] = 1e-5
+    tolerances['lambda-space'] = 1e-6
+    tolerances['lambda-time'] = 1e-5
 
-    test_param_nbs = [25]  # list of testing instances
+    test_param_nbs = [0]  # testing snapshots numbers
 
-    IMPORT_SNAPSHOTS = True  # import available snapshots
-    IMPORT_OFFLINE_QUANTITIES = True  # import available reduced quantities
-    SAVE_OFFLINE_QUANTITIES = True  # save reduced quantities, if computed
-    SAVE_RESULTS = False  # save solution for visualization
+    IMPORT_SNAPSHOTS = True  # whether to import snapshots
+    IMPORT_OFFLINE_QUANTITIES = True  # whether to import offline quantities
+    SAVE_OFFLINE_QUANTITIES = True  # whether to save offline quantities
+    SAVE_RESULTS = False  # whether to save results (i.e. reconstructed solutions)
 
     ######################################## TEST DEFINITION ########################################################
 
     common_directory = os.path.join(root_test, problem_name)
 
-    test_nb = None  # TO SET --> test to run --> if None, a new test is done, given the specifics specified above
+    test_nb = None  # choose the test to run --> if None, a new test is done, given the specifics specified above !!
 
     if test_nb is None:
         test_specs = dict()
@@ -159,13 +161,7 @@ elif problem_type == "Unsteady":
     if reduction_method == "ST-PGRB":
         results_directory = os.path.join(test_directory, f'results_{used_norm}')
     create_directory_if_not_existing(results_directory)
-    
-    ############################################## POST-PROCESS INFO ##################################################
-    
-    plot_solutions = True
-    count_RBvectors = True
-    plot_generalizedCoords = False
-    
+
 else:
     raise ValueError(f"Unrecognized problem type '{problem_type}'. "
                      f"Admissible values: [Steady, Unsteady]")

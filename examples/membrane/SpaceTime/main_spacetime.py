@@ -4,42 +4,6 @@
 Created on Mon Nov 28 09:48:32 2022
 @author: Riccardo Tenderini
 @mail: riccardo.tenderini@epfl.ch
-
-This file allows to test the Space-Time MOR methods SRB-TFO, ST-RB and ST-PGRB implemented in the
-context of this project, on a fixed set of characteristic parameters. The configuration of the problem at hand and of
-the method specifics is performed in the configuration file `:mod:config.py` In particular, the file is organized as
-follows:
-
-    * **INITIAL CHECKS**: some initial checks are performed, to verify that the problem and method configuration are
-      compliant with the requests of this test file. In particular:
-
-        1. The problem type must be set to "Unsteady"
-        2. The problem name must be set to "Stokes"
-        3. The problem reduction method must be selected among {'ST-RB', 'ST-LSPG'}
-        3. The DL flag must be set to False
-
-    * **INITIALIZATION**: section which allows to initialize the main actors involved in the method, in
-      particular:
-
-        1. the Matlab external engine
-        2. the Parameter Handler
-        3. the FOM problem at hand (in this case, an unsteady Thermal Block Problem)
-        4. the AffineDecompositionHandler
-        5. the RbManager (defining the FOM problem, the AffineDecompositionHandler and the paths where to save the
-           computed offline quantities)
-
-    * **METHOD TEST**: section where the ST MOR method is tested. In particular first the RB
-      affine decomposition arising from the application of the considered method is either constructed from scratch (if
-      `config.IMPORT_OFFLINE_QUANTITIES=False`) or imported from `.txt` files (if
-      `config.IMPORT_OFFLINE_QUANTITIES=True`). Then two different tests are performed, namely:
-
-        1. A test assessing the performance of the ST MOR method on some of the snapshots used to build the
-           Reduced Basis employed by the method itself. In this case, the errors in L2-H1-H10 norms are evaluated
-        2. A test assessing the performance of the ST MOR method on snapshots constructed from completely new
-           parameter values. In this case, both the errors in L2-H1-H10 norms and the execution times with respect to
-           the FOM problem resolution are evaluated
-
-    * **CONCLUSION**: to conclude, the Matlab external Engine is shut down.
 """
 
 import sys
@@ -69,6 +33,7 @@ logging.config.fileConfig(log_file_path, disable_existing_loggers=False)
 logger = logging.getLogger(__name__)
 
 logging.getLogger('matplotlib').setLevel(logging.WARNING)
+logging.getLogger("PIL").setLevel(logging.WARNING)
 
 
 def execute():
@@ -111,6 +76,7 @@ def execute():
     my_rb_manager.set_parametrizations(config.parametrizations)
     my_rb_manager.use_LU = config.use_LU
     my_rb_manager.N_periods = config.N_periods
+    my_rb_manager.Nt_IC = config.Nt_IC
     my_rb_manager.wall_elasticity = config.wall_elasticity
 
     # setting the newton's method specifics
@@ -155,11 +121,12 @@ def execute():
     # my_rb_manager.check_offline_phase(2)
 
     if config.reduction_method in {"ST-RB", "ST-PGRB"}:
-        my_rb_manager.test_rb_solver(config.test_param_nbs, cycles_specifics=config.cycles_specifics,
-                                     ss_ratio=config.time_subsample_ratio, compute_IG_error=config.compute_IG_error)
+        my_rb_manager.test_rb_solver(config.test_param_nbs,
+                                     cycles_specifics=config.cycles_specifics, ss_ratio=config.time_subsample_ratio,
+                                     compute_IG_error=config.compute_IG_error)
     elif config.reduction_method == "SRB-TFO":
-        my_rb_manager.test_time_marching(config.test_param_nbs, cycles_specifics=config.cycles_specifics,
-                                         ss_ratio=config.time_subsample_ratio)
+        my_rb_manager.test_time_marching(config.test_param_nbs,
+                                         cycles_specifics=config.cycles_specifics, ss_ratio=config.time_subsample_ratio)
     else:
         raise ValueError(f"Unrecognized reduction method {config.reduction_method}")
 

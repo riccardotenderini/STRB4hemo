@@ -32,6 +32,7 @@ logging.config.fileConfig(log_file_path, disable_existing_loggers=False)
 logger = logging.getLogger(__name__)
 
 logging.getLogger('matplotlib').setLevel(logging.WARNING)
+logging.getLogger("PIL").setLevel(logging.WARNING)
 
 
 def execute():
@@ -72,6 +73,7 @@ def execute():
     my_rb_manager.set_parametrizations(config.parametrizations)
     my_rb_manager.use_LU = config.use_LU
     my_rb_manager.N_periods = config.N_periods
+    my_rb_manager.Nt_IC = config.Nt_IC
 
     my_rb_manager.set_import_and_save(config.IMPORT_SNAPSHOTS,
                                       config.IMPORT_OFFLINE_QUANTITIES,
@@ -108,6 +110,8 @@ def execute():
 
     inflow_factory = InflowFactory()
     inflow_factory(my_rb_manager, config.flow_type, **config.flow_specs)
+
+    # my_rb_manager.check_offline_phase(10)
 
     if config.reduction_method in {'ST-RB', 'ST-PGRB'}:
         my_rb_manager.test_rb_solver(config.test_param_nbs,

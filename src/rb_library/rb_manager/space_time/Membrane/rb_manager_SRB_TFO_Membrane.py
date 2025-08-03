@@ -126,7 +126,7 @@ class RbManagerSRB_TFO_Membrane(rbmsrbtfoNS.RbManagerSRB_TFO_NavierStokes,
             sol = np.reshape(self.M_un[self.M_N['velocity'] + self.M_N['displacement']:self.M_N['velocity'] + self.M_N['displacement'] + self.M_N['pressure']],
                              (self.M_N_time['pressure'], self.M_N_space['pressure'])).T
         elif field == "lambda":
-            assert n < self.M_n_coupling
+            assert n < self.M_n_coupling, f"Invalid coupling index {n}"
             sol = np.reshape(self.M_un[self.M_N['velocity'] + self.M_N['displacement'] + self.M_N['pressure'] + self.M_N_lambda_cumulative[n]:
                                        self.M_N['velocity'] + self.M_N['displacement'] + self.M_N['pressure'] + self.M_N_lambda_cumulative[n+1]],
                              (self.M_N_time['lambda'][n], self.M_N_space['lambda'][n])).T
@@ -139,6 +139,10 @@ class RbManagerSRB_TFO_Membrane(rbmsrbtfoNS.RbManagerSRB_TFO_NavierStokes,
         """
         MODIFY
         """
+
+        if self.M_utildeh:
+            logger.warning("FEM solution is already available!")
+            return
 
         if fields is None:
             fields = {"velocity", "displacement", "pressure", "lambda"}
@@ -210,7 +214,12 @@ class RbManagerSRB_TFO_Membrane(rbmsrbtfoNS.RbManagerSRB_TFO_NavierStokes,
 
         return rhs_block
 
-    def _do_time_step(self, lhs_block, rhs_blocks, flow_rates, times, ind_t, sol, sol_d):
+    def _do_time_step(self, lhs_block, rhs_blocks, flow_rates, times, ind_t, sol, sol_d=None):
+        """
+        MODIFY
+        """
+
+        assert sol_d is not None, "The past displacement solutions must be provided!"
 
         _, Nt = self.M_fom_problem.time_specifics
 
@@ -251,7 +260,7 @@ class RbManagerSRB_TFO_Membrane(rbmsrbtfoNS.RbManagerSRB_TFO_NavierStokes,
                 lhs_block, flow_rates = self._do_cycle_update(lhs_blocks, ind_t, param_trace,
                                                               update_T=update_T, update_params=update_params)
 
-            converged = self._do_time_step(lhs_block, rhs_blocks, flow_rates, times, ind_t, sol, sol_d)
+            converged = self._do_time_step(lhs_block, rhs_blocks, flow_rates, times, ind_t, sol, sol_d=sol_d)
             if not converged:
                 logger.critical(f"Failed to compute the solution at timestep {ind_t}!")
                 break
@@ -269,7 +278,7 @@ class RbManagerSRB_TFO_Membrane(rbmsrbtfoNS.RbManagerSRB_TFO_NavierStokes,
 
         return sol, times
 
-    def test_time_marching(self, param_nbs, is_test=False, ss_ratio=1, cycles_specifics=None):
+    def test_time_marching(self, param_nbs, is_test=False, ss_ratio=1, cycles_specifics=None, compute_errors=True):
         """
         Solve the S-reduced problem for param numbers in param_nbs
         """
@@ -277,4 +286,5 @@ class RbManagerSRB_TFO_Membrane(rbmsrbtfoNS.RbManagerSRB_TFO_NavierStokes,
         return rbmsrbtfoNS.RbManagerSRB_TFO_NavierStokes.test_time_marching(self, param_nbs,
                                                                             is_test=is_test,
                                                                             ss_ratio=ss_ratio,
-                                                                            cycles_specifics=cycles_specifics)
+                                                                            cycles_specifics=cycles_specifics,
+                                                                            compute_errors=compute_errors)

@@ -296,10 +296,8 @@ class RbManagerSTPGRBStokes(rbmstS.RbManagerSpaceTimeStokes):
         logger.debug("Computing Phi^T*u0")
         try:
             initial_condition = self.import_FEM_structures(structures={'u0'})
-            self.M_u0['velocity'] = np.zeros((2, self.M_N_space['velocity']))
-            for k in range(2):
-                self.M_u0['velocity'][k] = self.project_vector(initial_condition['u0'][k], self.M_basis_space['velocity'],
-                                                   norm_matrix=self.M_norm_matrices['velocity'])
+            self.M_u0['velocity'] = self.project_vector(initial_condition['u0'].T, self.M_basis_space['velocity'],
+                                                        norm_matrix=self.M_norm_matrices['velocity']).T
         except ValueError:
             logger.warning("Impossible to load the initial condition. Proceeding with homogeneous initial condition")
             self.M_u0['velocity'] = np.zeros((2, self.M_N_space['velocity']))

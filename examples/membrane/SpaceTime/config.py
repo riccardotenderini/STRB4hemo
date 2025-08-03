@@ -12,11 +12,12 @@ def create_directory_if_not_existing(directory):
 ######################################## PROBLEM CONFIGURATION ########################################################
 #######################################################################################################################
 
-root = os.path.normpath('/home/riccardo/Desktop/PhD/MyRepos/STRB4hemo')  # TO SET --> root of the project directory
-root_tests = os.path.normpath('/home/riccardo/Desktop/PhD/MyRepos/STRB4hemo/TESTS/')  # TO SET --> root of the tests directory
+root = os.path.normpath('/home/riccardo/Desktop/PDE-DNN/')  # root of the project directory --> TO BE SET
+root_tests = os.path.normpath('/home/riccardo/Desktop/PDE-DNN/TESTS/')  # root of the tests directory --> TO BE SET
+matlab_library_path = os.path.join(root, 'feamat')  # root to the Matlab library
 
 problem_type = "Unsteady"  # type of the problem --> choose between steady and unsteady
-problem_name = "Navier-Stokes_Membrane"  # name of the problem --> choose between Stokes, Navier-Stokes, Navier-Stokes_Membrane
+problem_name = "Navier-Stokes_Membrane"  # name of the problem --> used to create the directory structure
 
 # root to the directory storing the data and where the results are saved
 root_test = os.path.join(root_tests, "RB", problem_type)
@@ -32,17 +33,17 @@ elif problem_type == "Unsteady":
     n_weak_inlets = 1  # number of weak inlet Dirichlet boundaries   --> 1 for tube, 2 for bifurcation, 2 for bypass
     n_weak_outlets = 0  # number of weak outlet Dirichlet boundaries --> 0 for tube, 0 for bifurcation, 1 for bypass
 
-    parametrizations = ['inflow', 'structure']  # list of parametrizations
+    parametrizations = ['inflow', 'structure']  # list of parametrizations to be considered in the test
     flow_type = 'default'  # type of flow to be imposed
     parametrization_name = ("" + (flow_type if 'inflow' in parametrizations else "") +
                             ("+clot" if 'clot' in parametrizations else "") +
                             ("+structure" if 'structure' in parametrizations else ""))
 
     if flow_type == 'default':
-        flow_specs = {'T': 0.40 + 0.00,
-                      'Nt': 40,
-                      'Nt_ramp': 0,
-                      'N_periods': 1}
+        flow_specs = {'T': 1.00 + 0.00,  # final time of the flow rate
+                      'Nt': 50,          # number of time steps in the flow rate
+                      'Nt_ramp': 0,      # number of time steps to ramp up the flow rate
+                      'N_periods': 1}    # number of flow rate periods
     elif flow_type == 'systolic':
         flow_specs = {'T': 0.37 + 0.05,
                       'Nt': 43,
@@ -63,10 +64,11 @@ elif problem_type == "Unsteady":
 
     wall_elasticity = 0  # elasticity of the external wall
 
-    N_periods = 1  # number of periods (e.g. heartbeats) in the flow rate of FOM data
-    cycles_specifics = {'n_cycles': 1,  # number of periods to be simulated
-                        'update_T': False,  # change period duration across cycles
-                        'update_params': False}  # update parameters across cycles
+    N_periods = 2  # number of periods (e.g. heartbeats) in the flow rate of FOM data
+    cycles_specifics = {'n_cycles': 2,  # number of cycles to be considered in the offline phase
+                        'update_T': False,  # whether to update the final time across cycles
+                        'update_params': False}  # whether to update the parametrization across cycles
+    Nt_IC = 50  # number of timesteps to skip to retrieve the initial condition
     time_subsample_ratio = 1  # subsampling ratio to apply over discrete temporal evaluations
 
     # specifics of the fom problem to be solved
@@ -83,39 +85,40 @@ elif problem_type == "Unsteady":
     used_norm = "l2"  # norm to be considered for residual minimization in the ST-PGRB method, within {'X', 'P', 'l2'}
     use_LU = False  # use LU factorization to speed up solve across multiple parameter instances
 
-    n_snapshots = 50  # number of snapshots used to assemble the reduced bases
-    N_components_NL_term = 10  # number of affine components to consider for the non-linear convective term
+    n_snapshots = 1  # number of snapshots used to assemble the reduced bases
+    N_components_NL_term = 12  # number of affine components to consider for the non-linear convective term
 
     newton_specs = dict()  # specifics of the Newton's method
-    newton_specs['tolerance'] = 5e-5  # tolerance on relative residual
-    newton_specs['absolute tolerance'] = 1e-3  # tolerance on absolute residual
+    newton_specs['tolerance'] = 1e-5  # tolerance on relative residual
+    newton_specs['absolute tolerance'] = 1e-5  # tolerance on absolute residual
     newton_specs['max error'] = 1e-3  # maximum relative residual
-    newton_specs['absolute max error'] = 1e-1  # maximum absolute residual
+    newton_specs['absolute max error'] = 1e-3  # maximum absolute residual
     newton_specs['max iterations'] = 10  # maximal number of iterations
-    newton_specs['IG mode'] = "average"  # mode to choose the initial guess ('NN', 'PODI', 'average', 'zero')
-    newton_specs['neighbors number'] = 3  # number of neighbors for NN interpolation
-    newton_specs['use convective jacobian'] = False  # use the convective jacobian in the Newton's method
+    newton_specs['IG mode'] = "NN"  # mode to choose the initial guess ('NN', 'PODI', 'average', 'zero')
+    newton_specs['neighbors number'] = 1  # number of neighbors for NN interpolation
+    newton_specs['use convective jacobian'] = True  # whether to use the convective Jacobian or not
 
-    tolerances = dict()  # dictionary of POD tolerances
-    tolerances['velocity-space'] = 1e-3
-    tolerances['velocity-time'] = 1e-3
-    tolerances['pressure-space'] = 1e-3
-    tolerances['pressure-time'] = 1e-3
-    tolerances['lambda-space'] = 1e-5
-    tolerances['lambda-time'] = 1e-3
+    tolerances = dict()  # POD tolerances
+    tolerances['velocity-space'] = 1e-4
+    tolerances['velocity-time'] = 1e-4
+    tolerances['pressure-space'] = 1e-4
+    tolerances['pressure-time'] = 1e-4
+    tolerances['lambda-space'] = 1e-6
+    tolerances['lambda-time'] = 1e-4
 
-    test_param_nbs = [50]  # list of testing instances
-    compute_IG_error = False  # compute error on the initial guess
+    test_param_nbs = [0]  # testing snapshots numbers
+    compute_IG_error = False  # whether to compute the initial guess error or not
 
-    IMPORT_SNAPSHOTS = False  # import available snapshots
-    IMPORT_OFFLINE_QUANTITIES = True  # import available reduced quantities
-    SAVE_OFFLINE_QUANTITIES = True  # save reduced quantities, if computed
-    SAVE_RESULTS = False  # save solution for visualization
+    IMPORT_SNAPSHOTS = True  # whether to import snapshots
+    IMPORT_OFFLINE_QUANTITIES = True  # whether to import offline quantities
+    SAVE_OFFLINE_QUANTITIES = True  # whether to save offline quantities
+    SAVE_RESULTS = False  # whether to save the results of the test
+
     ######################################## TEST DEFINITION ########################################################
 
     common_directory = os.path.join(root_test, problem_name)
 
-    test_nb = 1  # TO SET --> choose the test to run --> if None, a new test is done, given the specifics above
+    test_nb = None  # choose the test to run --> if None, a new test is done, given the specifics above !!
 
     if test_nb is None:
         test_specs = dict()
@@ -123,6 +126,7 @@ elif problem_type == "Unsteady":
         test_specs['n_snapshots'] = n_snapshots
         test_specs['space_projection'] = projection_norm
         test_specs['time_subsample_ratio'] = time_subsample_ratio
+        # test_specs['n_components_nl_term'] = N_components_NL_term
 
         test_cnt = 1
         while os.path.isdir(os.path.join(common_directory, mesh_name, parametrization_name,
@@ -155,7 +159,7 @@ elif problem_type == "Unsteady":
 
     #################################### PATHS CONFIGURATION #######################################################
 
-    FEM_dir = os.path.join(common_directory, mesh_name, parametrization_name, 'FEM_data')
+    FEM_dir = os.path.join(common_directory, mesh_name, parametrization_name, 'FEM_data/')
     snapshots_path = os.path.join(FEM_dir, 'snapshots')
     fom_structures_path = os.path.join(FEM_dir, 'matrices')
 
@@ -175,7 +179,7 @@ elif problem_type == "Unsteady":
 
     results_directory = os.path.join(core_results_directory, f"NLcomp_{N_components_NL_term}")
     if reduction_method == "ST-PGRB":
-        core_results_directory = os.path.join(test_directory, f'results_{used_norm}')
+        core_results_directory = os.path.join(test_directory, 'results_' + used_norm)
         results_directory = os.path.join(core_results_directory, f"NLcomp_{N_components_NL_term}")
     create_directory_if_not_existing(results_directory)
 
@@ -186,5 +190,4 @@ elif problem_type == "Unsteady":
     plot_generalizedCoords = False
 
 else:
-    raise ValueError(f"Unrecognized problem type '{problem_type}'."
-                     f" Admissible values: [Steady, Unsteady]")
+    raise ValueError(f"Unrecognized problem type '{problem_type}'. Admissible values: [Steady, Unsteady]")

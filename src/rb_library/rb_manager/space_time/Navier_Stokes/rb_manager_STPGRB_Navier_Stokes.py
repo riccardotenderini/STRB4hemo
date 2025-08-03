@@ -277,7 +277,7 @@ class RbManagerSTPGRBNavierStokes(rbmstNS.RbManagerSpaceTimeNavierStokes,
                                            self.M_N_space['velocity'], self.M_N_space['velocity']))
             if 'clot' in self.M_parametrizations:
                 self.M_MclotJ_matrices = np.zeros((n_clots, self.M_N_components_NLJacobian,
-                                                   self.M_N_space['velocity'], self.M_N_space['velocity']))
+                                                    self.M_N_space['velocity'], self.M_N_space['velocity']))
 
             for j in range(self.M_N_components_NLJacobian):
                 self.M_AJ_matrices[j] = M_A_red.T.dot(XJ_red[j])

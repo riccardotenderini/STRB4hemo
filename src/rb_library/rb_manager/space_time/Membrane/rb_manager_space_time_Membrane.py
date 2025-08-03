@@ -10,8 +10,6 @@ import numpy as np
 import scipy.sparse
 from sklearn.gaussian_process.kernels import RBF
 import os
-import shutil
-import time
 
 import src.rb_library.rb_manager.space_time.Navier_Stokes.rb_manager_space_time_Navier_Stokes as rbmstNS
 import src.utils.array_utils as arr_utils
@@ -39,9 +37,6 @@ class RbManagerSpaceTimeMembrane(rbmstNS.RbManagerSpaceTimeNavierStokes):
 
         self.M_valid_fields = ['velocity', 'pressure', 'displacement', 'lambda']
 
-        self.M_snapshots_matrix['displacement'] = np.zeros(0)
-        self.M_test_snapshots_matrix['displacement'] = np.zeros(0)
-
         self.M_Abd_matrices = [np.zeros(0)] * 3
         self.M_Mbd_matrix = np.zeros(0)
         self.M_MbdWall_matrix = np.zeros(0)
@@ -50,8 +45,6 @@ class RbManagerSpaceTimeMembrane(rbmstNS.RbManagerSpaceTimeNavierStokes):
         self.M_N_space['displacement'] = 0
         self.M_N_time['displacement'] = 0
         self.M_N['displacement'] = 0
-
-        self.M_basis_time_IC_int = np.zeros(0)
 
         self.M_param_ref = np.array([1.2, 0.1, 4e6, 0.5])  # density, thickness, Young, Poisson
         self.M_wall_elasticity = 0
@@ -120,127 +113,6 @@ class RbManagerSpaceTimeMembrane(rbmstNS.RbManagerSpaceTimeNavierStokes):
                 ('displacement' in self.M_norm_matrices.keys()) and
                 (self.M_norm_matrices['displacement'].shape[0] > 0))
 
-    def _import_snapshots(self, _ns=None, is_test=False, ss_ratio=1):
-        """
-        MODIFY
-        """
-
-        assert self.M_import_snapshots, "Snapshots import disabled"
-
-        start = time.time()
-
-        if not self.check_norm_matrices():
-            self.get_norm_matrices()
-
-        if not is_test:
-            old_snap_u = self.M_snapshots_matrix['velocity']
-            old_snap_p = self.M_snapshots_matrix['pressure']
-            old_snap_d = self.M_snapshots_matrix['displacement']
-            old_snap_lambda = self.M_snapshots_matrix['lambda']
-            old_snap_params = self.M_offline_ns_parameters
-            path = self.M_snapshots_path
-        else:
-            old_snap_u = self.M_test_snapshots_matrix['velocity']
-            old_snap_p = self.M_test_snapshots_matrix['pressure']
-            old_snap_d = self.M_test_snapshots_matrix['displacement']
-            old_snap_lambda = self.M_test_snapshots_matrix['lambda']
-            old_snap_params = self.M_test_offline_ns_parameters
-            path = self.M_test_snapshots_path
-
-        if not arr_utils.is_empty(old_snap_u) and not arr_utils.is_empty(old_snap_p) and not arr_utils.is_empty(old_snap_d) and \
-           all([not arr_utils.is_empty(old_snap_lambda[n]) for n in range(self.M_n_coupling)]):
-            assert self.M_Nt > 0
-            _ns_cur = int(old_snap_u.shape[1]/self.M_Nt)
-            logger.warning(f"{_ns_cur} snapshots already available. Importing {_ns - _ns_cur} new snapshots.")
-        else:
-            _ns_cur = 0
-            logger.info(f"Reading {_ns} snapshots ...")
-
-        count = 0
-        if _ns is None:
-            _ns = 0
-            while os.path.isdir(os.path.join(path, f'param{_ns}')):
-                _ns += 1
-
-        snap_u, snap_p, snap_d, snap_lambda, snap_params = [], [], [], {n: [] for n in range(self.M_n_coupling)}, []
-
-        for i in range(_ns_cur, _ns):
-
-            cur_path = os.path.join(path, f'param{i}')
-            is_h5 = os.path.isfile(os.path.join(cur_path, 'block0.h5'))
-
-            if is_h5 and not os.path.isdir(os.path.join(path, 'Template')):
-                gen_utils.create_dir(os.path.join(path, 'Template'))
-                shutil.copy(os.path.join(cur_path, 'block0.h5'), os.path.join(path, 'Template', 'block0.h5'))
-                shutil.copy(os.path.join(cur_path, 'block0.xmf'), os.path.join(path, 'Template', 'block0.xmf'))
-
-            try:
-                snap_u.append(self._load_snapshot_file(cur_path, 'velocity',
-                                                       save=True, remove=not is_h5)[ss_ratio-1::ss_ratio].T)
-                snap_p.append(self._load_snapshot_file(cur_path, 'pressure',
-                                                       save=True, remove=not is_h5)[ss_ratio-1::ss_ratio].T)
-                snap_d.append(self._load_snapshot_file(cur_path, 'displacement',
-                                                       save=True, remove=True)[:, self.M_bd_indexes][ss_ratio-1::ss_ratio].T)
-                snap_params.append(np.genfromtxt(os.path.join(cur_path, 'coeffile.txt'), delimiter=',')[None])
-
-                for n in range(self.M_n_coupling):
-                    snap_lambda[n].append(self._load_snapshot_file(cur_path, f'lambda{n}',
-                                                                   save=True, remove=True)[ss_ratio-1::ss_ratio].T)
-
-                count += 1
-
-            except (OSError, IOError, FileNotFoundError):
-                logger.warning(f"Impossible to load files for snapshot number {i}")
-
-        if count == 0:
-            logger.warning("No snapshots available!")
-            return False
-        else:
-            assert snap_u[-1].shape[1] % self.M_N_periods == 0, \
-                (f"The total number of FOM time instants ({snap_u[-1].shape[1]}) is not a multiple of selected "
-                 f"the number of periods {self.M_N_periods}")
-            self.M_Nt = (snap_u[-1].shape[1]) // self.M_N_periods
-
-        logger.info(f"Number of read snapshots : {count}")
-
-        if _ns_cur == 0:
-            snap_u, snap_p, snap_d = np.hstack(snap_u), np.hstack(snap_p), np.hstack(snap_d)
-            snap_lambda = [np.hstack(_snap_lambda) for _,_snap_lambda in snap_lambda.items()]
-            snap_params = np.vstack(snap_params)
-        else:
-            snap_u = np.concatenate((old_snap_u, np.hstack(snap_u)), axis=1)
-            snap_p = np.concatenate((old_snap_p, np.hstack(snap_p)), axis=1)
-            snap_d = np.concatenate((old_snap_d, np.hstack(snap_d)), axis=1)
-            snap_lambda = [np.concatenate((_old_snap_lambda, np.hstack(_snap_lambda)), axis=1)
-                           for (_old_snap_lambda, (_,_snap_lambda)) in zip(old_snap_lambda, snap_lambda.items())]
-            snap_params = np.concatenate((old_snap_params, np.vstack(snap_params)), axis=0)
-
-        logger.debug(f"Size of velocity snapshots matrix : {snap_u.shape}")
-        logger.debug(f"Size of pressure snapshots matrix : {snap_p.shape}")
-        logger.debug(f"Size of displacement snapshots matrix : {snap_d.shape}")
-        for n in range(self.M_n_coupling):
-            logger.debug(f"Size of multipliers {n} snapshots matrix : {snap_lambda[n].shape}")
-        logger.debug(f"Size of parameters matrix: {snap_params.shape}")
-
-        if not is_test:
-            self.M_snapshots_matrix['velocity'] = snap_u
-            self.M_snapshots_matrix['pressure'] = snap_p
-            self.M_snapshots_matrix['displacement'] = snap_d
-            self.M_snapshots_matrix['lambda'] = snap_lambda
-            self.M_offline_ns_parameters = snap_params
-        else:
-            self.M_test_snapshots_matrix['velocity'] = snap_u
-            self.M_test_snapshots_matrix['pressure'] = snap_p
-            self.M_test_snapshots_matrix['displacement'] = snap_d
-            self.M_test_snapshots_matrix['lambda'] = snap_lambda
-            self.M_test_offline_ns_parameters = snap_params
-
-        self._compute_parameter_bounds(is_test=is_test)
-
-        logger.debug(f"Snapshots importing duration: {(time.time() - start):.4f} s")
-
-        return True
-
     def import_snapshots_matrix(self, _ns=None, ss_ratio=1):
         """
         MODIFY
@@ -248,7 +120,7 @@ class RbManagerSpaceTimeMembrane(rbmstNS.RbManagerSpaceTimeNavierStokes):
 
         import_success = super().import_snapshots_matrix(_ns=_ns, ss_ratio=ss_ratio)
 
-        self.M_Nh['displacement'] = self.M_snapshots_matrix['displacement'].shape[0]
+        self.M_Nh['displacement'] = self.M_snapshots_matrix['velocity'].shape[0]
 
         return import_success
 
@@ -259,7 +131,7 @@ class RbManagerSpaceTimeMembrane(rbmstNS.RbManagerSpaceTimeNavierStokes):
 
         super().import_test_snapshots_matrix(_ns=_ns, ss_ratio=ss_ratio)
 
-        self.M_Nh['displacement'] = self.M_test_snapshots_matrix['displacement'].shape[0]
+        self.M_Nh['displacement'] = self.M_test_snapshots_matrix['velocity'].shape[0]
 
         return
 
@@ -270,8 +142,7 @@ class RbManagerSpaceTimeMembrane(rbmstNS.RbManagerSpaceTimeNavierStokes):
         """
 
         if field == 'displacement':
-            return self._get_snapshot(self.M_snapshots_matrix['displacement'], _snapshot_number,
-                                      _fom_coordinates=_fom_coordinates, timesteps=timesteps)
+            raise ValueError("Displacement snapshots are not available in memory.")
         else:
             return super().get_snapshot(_snapshot_number,
                                         _fom_coordinates=_fom_coordinates, timesteps=timesteps, field=field, n=n)
@@ -283,12 +154,10 @@ class RbManagerSpaceTimeMembrane(rbmstNS.RbManagerSpaceTimeNavierStokes):
         """
 
         if field == 'displacement':
-            return self._get_snapshot(self.M_test_snapshots_matrix['displacement'], _snapshot_number,
-                                      _fom_coordinates=_fom_coordinates, timesteps=timesteps)
+            raise ValueError("Displacement snapshots are not available in memory.")
         else:
             return super().get_test_snapshot(_snapshot_number,
-                                             _fom_coordinates=_fom_coordinates, timesteps=timesteps, field=field,
-                                             n=n)
+                                             _fom_coordinates=_fom_coordinates, timesteps=timesteps, field=field, n=n)
 
     def perform_pod_space(self, _tol=1e-3, field="velocity"):
         """
@@ -305,7 +174,7 @@ class RbManagerSpaceTimeMembrane(rbmstNS.RbManagerSpaceTimeNavierStokes):
 
         return
 
-    def _bdf2_integration(self, vec):
+    def _bdf2_integration(self, vec, ic_mode='zero', zero_ic=False):
         """
         MODIFY
         """
@@ -317,7 +186,21 @@ class RbManagerSpaceTimeMembrane(rbmstNS.RbManagerSpaceTimeNavierStokes):
                    self.M_bdf[1] * np.diagflat(np.ones(Nt-2), -2))
         rhs_vec = self.M_bdf_rhs * self.dt * vec
 
+        if ic_mode == 'zero':
+            pass
+        elif ic_mode == 'constant':
+            rhs_vec[0] -= (self.M_bdf[0] + self.M_bdf[1]) * vec[0]
+            rhs_vec[1] -= self.M_bdf[1] * vec[0]
+        elif ic_mode == 'mirror':
+            rhs_vec[0] -= self.M_bdf[0] * vec[1] + self.M_bdf[1] * vec[2]
+            rhs_vec[1] -= self.M_bdf[1] * vec[1]
+        else:
+            raise ValueError(f"Unrecognized IC mode: {ic_mode}")
+
         new_vec = scipy.linalg.solve(lhs_mat, rhs_vec)
+
+        if zero_ic:
+            new_vec -= new_vec[0]
 
         return new_vec
 
@@ -334,25 +217,14 @@ class RbManagerSpaceTimeMembrane(rbmstNS.RbManagerSpaceTimeNavierStokes):
 
             self.M_basis_time['displacement'] = np.array([self._bdf2_integration(basis)
                                                           for basis in self.M_basis_time['velocity'].T]).T
-            logger.info(f"Dimension of displacement temporal reduced basis: {self.M_basis_time['displacement'].shape[1]}")
+            logger.info(f"Dimension of displacement temporal reduced basis: "
+                        f"{self.M_basis_time['displacement'].shape[1]}")
 
             self.M_sv_time['displacement'] = self.M_sv_time['velocity']
             self.M_N_time['displacement'] = self.M_basis_time['displacement'].shape[1]
 
         else:
             super().perform_pod_time(_tol=_tol, method=method, field=field)
-
-        return
-
-    def build_IC_basis_elements(self):
-        """
-        Build the temporal basis needed to impose the ICs
-        """
-
-        rbmstNS.RbManagerSpaceTimeNavierStokes.build_IC_basis_elements(self)
-
-        self.M_basis_time_IC_int = np.array([self._bdf2_integration(basis)
-                                             for basis in self.M_basis_time_IC])
 
         return
 
@@ -579,11 +451,9 @@ class RbManagerSpaceTimeMembrane(rbmstNS.RbManagerSpaceTimeNavierStokes):
         logger.debug("Projecting the displacement initial condition")
         try:
             initial_condition = self.import_FEM_structures(structures={'d0'})
-            self.M_u0['displacement'] = np.zeros((2, self.M_N_space['displacement']))
-            for k in range(2):
-                self.M_u0['displacement'][k] = self.project_vector(initial_condition['d0'][k][self.M_bd_indexes],  # only boundary DOFs!
-                                                   self.M_basis_space['displacement'],
-                                                   norm_matrix=None)
+            self.M_u0['displacement'] = self.project_vector(initial_condition['d0'][:, self.M_bd_indexes].T,
+                                                            self.M_basis_space['displacement'],
+                                                            norm_matrix=self.M_norm_matrices['displacement']).T
         except ValueError:
             logger.warning("Impossible to load the displacement initial condition. "
                            "Proceeding with homogeneous initial condition.")
@@ -777,37 +647,6 @@ class RbManagerSpaceTimeMembrane(rbmstNS.RbManagerSpaceTimeNavierStokes):
 
         return new_params
 
-    def _reset_errors(self):
-        """
-        MODIFY
-        """
-
-        super()._reset_errors()
-
-        self.M_relative_error['displacement'], self.M_relative_error['displacement-l2'] = np.zeros(self.M_Nt), 0.0
-        self.M_relative_error['IG-displacement'], self.M_relative_error['IG-displacement-l2'] = np.zeros(self.M_Nt), 0.0
-
-        return
-
-    def _update_errors(self, N=None, is_IG=False):
-        """
-        MODIFY
-        """
-
-        if N is None:
-            N = 1
-
-        super()._update_errors(N=N, is_IG=is_IG)
-
-        if not is_IG:
-            self.M_relative_error['displacement'] += self.M_cur_errors['displacement'] / N
-            self.M_relative_error['displacement-l2'] += self.M_cur_errors['displacement-l2'] / N
-        else:
-            self.M_relative_error['IG-displacement'] += self.M_cur_errors['displacement'] / N
-            self.M_relative_error['IG-displacement-l2'] += self.M_cur_errors['displacement-l2'] / N
-
-        return
-
     def get_field(self, _wn, field, n=None, reshape=False):
         """
         Get target field from solution
@@ -835,6 +674,11 @@ class RbManagerSpaceTimeMembrane(rbmstNS.RbManagerSpaceTimeNavierStokes):
         super().reconstruct_fem_solution(_w, fields=fields,
                                          indices_space=indices_space, indices_time=indices_time)
 
+        if 'displacement' in fields and self._has_IC('displacement'):
+            _u0 = np.dot(self.M_basis_space['velocity'], self.M_u0['velocity'][-1])  # (N_u^s,)
+            basis_IC_int = self._bdf2_integration(np.ones(self.M_Nt), ic_mode='constant', zero_ic=True)
+            self.utildeh['displacement'] += _u0[..., None] * basis_IC_int[None]
+
         return
 
     def _save_solution(self, param_nb, save_path, is_test=False, n_cycles=None,
@@ -851,7 +695,7 @@ class RbManagerSpaceTimeMembrane(rbmstNS.RbManagerSpaceTimeNavierStokes):
 
         if save_FOM:
             snap_displacement = self._load_snapshot_file(os.path.join(snapshots_path, f'param{param_nb}'), 'displacement',
-                                                         save=False, remove=False).T
+                                                         save=False, remove=False)[0].T
 
             FEM_folder_name = os.path.join(save_path, 'FEM', 'Block0')
 
@@ -874,25 +718,12 @@ class RbManagerSpaceTimeMembrane(rbmstNS.RbManagerSpaceTimeNavierStokes):
                                                 'displacement', snap_displacement, field_dim=3)
 
             else:
-                # reconstructed_displacement = np.zeros((self.M_Nh['velocity'], self.M_Nt))
-                # reconstructed_displacement[self.M_bd_indexes] = self.M_utildeh['displacement']
                 arr_utils.save_array(self.M_utildeh['displacement'].T, os.path.join(STRB_folder_name, 'displacement.txt'))
 
                 if save_FOM:
                     arr_utils.save_array(snap_displacement.T, os.path.join(FEM_folder_name, 'displacement.txt'))
 
         return
-
-    def _fill_errors(self, errors, data=None, is_IG=False):
-        """
-        MODIFY
-        """
-
-        data = super()._fill_errors(errors, data=data, is_IG=is_IG)
-
-        data[("IG-" if is_IG else "") + "displacement"] = errors['displacement-l2']
-
-        return data
 
     def _save_results_general(self):
         """
@@ -901,39 +732,10 @@ class RbManagerSpaceTimeMembrane(rbmstNS.RbManagerSpaceTimeNavierStokes):
 
         super()._save_results_general()
 
-        ERRORS_folder_name = os.path.join(self.M_results_path, 'mean_errors')
+        ERRORS_folder_name = os.path.join(self.M_results_path, 'avg_errors')
         np.savetxt(os.path.join(ERRORS_folder_name, 'displacement.txt'), self.M_relative_error['displacement'])
 
         return
-
-    def compute_online_errors(self, param_nb, sol=None, is_test=False, ss_ratio=1):
-        """
-        Compute the errors (H1-norm for velocity, L2-norm for pressure, displacement, in both cases l2 in time) after
-        the online phase for param 'param_nb'
-        """
-
-        if sol is not None:
-            assert type(sol) is dict and {'displacement'}.issubset(sol.keys()), "Invalid solution format"
-        else:
-            sol = self.M_utildeh
-
-        errors = super().compute_online_errors(param_nb, sol=sol, is_test=is_test, ss_ratio=ss_ratio)
-
-        snapshots_path = self.M_test_snapshots_path if is_test else self.M_snapshots_path
-
-        if sol['displacement'].shape[0] > self.M_bd_indexes.shape[0]:
-            sol['displacement'] = sol['displacement'][self.M_bd_indexes]
-
-        snap = self._load_snapshot_file(os.path.join(snapshots_path, f'param{param_nb}'), 'displacement',
-                                        save=False, remove=False)[:self.M_Nt][ss_ratio-1::ss_ratio].T[self.M_bd_indexes]
-        error_L2bd, denom_L2bd, error_L2bd_l2 = self._compute_error_field(sol['displacement'], snap, 'displacement',
-                                                                          error_norm='L2bd')
-
-        errors['displacement'] = np.array(error_L2bd)
-        errors['displacement-ref'] = np.array(denom_L2bd)
-        errors['displacement-l2'] = error_L2bd_l2
-
-        return errors
 
     def postprocess_GS_errors(self, params, errors, param_names, folder):
         """ Draw plots and save files from GS-like analysis

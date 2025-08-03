@@ -36,6 +36,19 @@ class RbManagerSTRBMembrane(rbmstrbNS.RbManagerSTRBNavierStokes,
 
         return
 
+    def build_IC_basis_elements(self):
+        """
+        Build quantities needed to enforce initial conditions with the ST-RB method.
+        """
+
+        rbmstrbNS.RbManagerSTRBNavierStokes.build_IC_basis_elements(self)
+
+        basis_IC_int = self._bdf2_integration(np.ones(self.M_Nt), ic_mode='constant', zero_ic=True)
+        self.M_basis_time_IC_elements['velocity_int_full'] = basis_IC_int
+        self.M_basis_time_IC_elements['velocity_int'] = self.M_basis_time['velocity'].T.dot(basis_IC_int)[None]
+
+        return
+
     def build_ST_basis(self, _tolerances, which=None):
         """
         MODIFY
@@ -87,7 +100,7 @@ class RbManagerSTRBMembrane(rbmstrbNS.RbManagerSTRBNavierStokes,
         self.M_Blocks_param_affine['structure'] = dict()
         self.M_Blocks_param_affine['structure'][0] = [np.zeros(0)] * (K + 1)
 
-        psi_u_psi_u = expand_time(np.eye(self.M_N_time['velocity']))
+        psi_u_psi_u = expand_time(self.M_basis_time['velocity'].T.dot(self.M_basis_time['velocity']))
         psi_u_psi_u_shift1 = expand_time(self.M_basis_time['velocity'][1:].T.dot(self.M_basis_time['velocity'][:-1]))
         psi_u_psi_u_shift2 = expand_time(self.M_basis_time['velocity'][2:].T.dot(self.M_basis_time['velocity'][:-2]))
         psi_u_psi_d = expand_time(self.M_basis_time['velocity'].T.dot(self.M_basis_time['displacement']))
@@ -109,30 +122,26 @@ class RbManagerSTRBMembrane(rbmstrbNS.RbManagerSTRBNavierStokes,
             block = MbdWall_matrix_t * psi_u_psi_d * (self.M_bdf_rhs * self.dt * self.M_wall_elasticity)
             self.M_Blocks[0] += reshape_space_time(block, self.M_N['velocity'], self.M_N['velocity'])
 
-        # TODO: add variant with semi-implicit coupling (?)
-
         return
 
-    def _update_IC(self):
+    def _reconstruct_IC(self, field, n=0):
         """
-        Update initial conditions
+        Reconstruct the initial condition for a given field from the available solution
         """
 
-        rbmstrbNS.RbManagerSTRBNavierStokes._update_IC(self)
+        if field == 'displacement':
+            d0 = np.dot(self.get_solution_field("velocity"), self.M_basis_time['displacement'][-2:].T).T
 
-        d0 = np.dot(self.get_solution_field("velocity"), self.M_basis_time['displacement'][-2:].T).T
+            d0_ic, u0_ic = 0, 0
+            if self._has_IC(field='displacement'):
+                d0_ic = self.M_u0['displacement'][-1][None]
+            if self._has_IC(field='velocity'):
+                u0_ic = self.M_u0['velocity'][-1, None] * self.M_basis_time_IC_elements['velocity_int_full'][-2:, None]
 
-        d0_ic, u0_ic = 0, 0
-        if self._has_IC(field='displacement'):
-            d0_ic = np.sum((self.M_basis_time_IC[:, np.newaxis, -2:] *
-                            self.M_u0['displacement'][..., np.newaxis]), axis=0).T
-        if self._has_IC(field='velocity'):
-            u0_ic = np.sum((self.M_basis_time_IC_int[:, np.newaxis, -2:] *
-                            self.M_u0['velocity'][..., np.newaxis]), axis=0).T
+            return d0 + d0_ic + u0_ic
 
-        self.M_u0['displacement'] = d0 + d0_ic + u0_ic
-
-        return
+        else:
+            return rbmstrbNS.RbManagerSTRBNavierStokes._reconstruct_IC(self, field, n=n)
 
     def update_IC_terms(self, update_IC=False):
         """
@@ -141,48 +150,45 @@ class RbManagerSTRBMembrane(rbmstrbNS.RbManagerSTRBNavierStokes,
 
         rbmstrbNS.RbManagerSTRBNavierStokes.update_IC_terms(self, update_IC=update_IC)
 
-        if not self._has_IC():
-            return
-
         K = len(self.M_Abd_matrices)
-
         self.M_f_Blocks_param_affine['structure'] = dict()
-        self.M_f_Blocks_param_affine['structure'][0] = [np.zeros(0)] * (K+1)
+        self.M_f_Blocks_param_affine['structure'][0] = [np.zeros(0)] * (K + 1)
+        for k in range(K+1):
+            self.M_f_Blocks_param_affine['structure'][0][k] = np.zeros(self.M_N['velocity'])
+
+        self.set_param_functions()
+
+        if not (self._has_IC('velocity') or self._has_IC('displacement')):
+            return
 
         # IC contributions for time marching
         Mu0 = self.M_Mbd_matrix.dot(self.M_u0['velocity'].T)
-        tmp_M = - np.stack([self.M_bdf[1] * Mu0[:, 0] + self.M_bdf[0] * Mu0[:, 1],
-                           self.M_bdf[1] * Mu0[:, 1]], axis=1)
-        self.M_f_Blocks_param_affine['structure'][0][0] = (tmp_M.dot(self.M_basis_time['velocity'][:2])).flatten()
+        tmp_M = np.stack([self.M_bdf[0] * Mu0[:, 1] + self.M_bdf[1] * Mu0[:, 0],
+                         self.M_bdf[1] * Mu0[:, 1]], axis=1)
+        self.M_f_Blocks_param_affine['structure'][0][0] = - (tmp_M.dot(self.M_basis_time['velocity'][:2])).flatten()
 
         # IC contribution stemming from solution reconstruction
         expand_space = lambda X: np.expand_dims(X, 1)
-        expand_time = lambda X: np.expand_dims(X, 0)
 
-        psi_u_IC = expand_time(self.M_basis_time['velocity'].T.dot(self.M_basis_time_IC.T))  # (1, n_u^t, 2)
-        psi_u_IC_shift1 = expand_time(self.M_basis_time['velocity'][1:].T.dot(self.M_basis_time_IC.T[:-1]))
-        psi_u_IC_shift2 = expand_time(self.M_basis_time['velocity'][2:].T.dot(self.M_basis_time_IC.T[:-2]))
-        psi_u_IC_int = expand_time(self.M_basis_time['velocity'].T.dot(self.M_basis_time_IC_int.T))
+        u0 = self.M_u0['velocity'][-1]
+        d0 = self.M_u0['displacement'][-1]
 
-        B0_M = expand_space(self.M_Mbd_matrix.dot(self.M_u0['velocity'].T))
-        self.M_f_Blocks_param_affine['structure'][0][0] -= np.sum(B0_M * (psi_u_IC +
-                                                                          self.M_bdf[0] * psi_u_IC_shift1 +
-                                                                          self.M_bdf[1] * psi_u_IC_shift2),
-                                                                  axis=-1).flatten()
+        B0_M = expand_space(Mu0[:, -1])
+        self.M_f_Blocks_param_affine['structure'][0][0] -= (B0_M * (self.M_basis_time_IC_elements['velocity'] +
+                                                                    self.M_bdf[0] * self.M_basis_time_IC_elements['velocity_S1'] +
+                                                                    self.M_bdf[1] * self.M_basis_time_IC_elements['velocity_S2'])).flatten()
 
         for k in range(K):
-            BO_Abd = expand_space(self.M_bdf_rhs * self.dt * self.M_Abd_matrices[k].dot(self.M_u0['displacement'].T))
-            self.M_f_Blocks_param_affine['structure'][0][k+1] = - np.sum(BO_Abd * psi_u_IC, axis=-1).flatten()
-            BO_Abd_u = expand_space(self.M_bdf_rhs * self.dt * self.M_Abd_matrices[k].dot(self.M_u0['velocity'].T))
-            self.M_f_Blocks_param_affine['structure'][0][k+1] -= np.sum(BO_Abd_u * psi_u_IC_int, axis=-1).flatten()
+            BO_Abd = expand_space(self.M_bdf_rhs * self.dt * self.M_Abd_matrices[k].dot(d0))
+            self.M_f_Blocks_param_affine['structure'][0][k+1] = - (BO_Abd * self.M_basis_time_IC_elements['velocity']).flatten()
+            BO_Abd_u = expand_space(self.M_bdf_rhs * self.dt * self.M_Abd_matrices[k].dot(u0))
+            self.M_f_Blocks_param_affine['structure'][0][k+1] -= (BO_Abd_u * self.M_basis_time_IC_elements['velocity_int']).flatten()
 
         if self._has_wall_elasticity():
-            B0_E = expand_space(self.M_bdf_rhs * self.dt * self.M_MbdWall_matrix.dot(self.M_u0['displacement'].T))
-            self.M_f_Blocks_no_param[0] -= np.sum(B0_E * psi_u_IC, axis=-1).flatten()
-            B0_E_u = expand_space(self.M_bdf_rhs * self.dt * self.M_MbdWall_matrix.dot(self.M_u0['velocity'].T))
-            self.M_f_Blocks_no_param[0] -= np.sum(B0_E_u * psi_u_IC_int, axis=-1).flatten()
-
-        self.M_f_Block = np.hstack([self._get_f_block(0), self._get_f_block(1), self._get_f_block(2)])
+            B0_E = expand_space(self.M_bdf_rhs * self.dt * self.M_MbdWall_matrix.dot(d0))
+            self.M_f_Blocks_no_param[0] -= (B0_E * self.M_basis_time_IC_elements['velocity']).flatten()
+            B0_E_u = expand_space(self.M_bdf_rhs * self.dt * self.M_MbdWall_matrix.dot(u0))
+            self.M_f_Blocks_no_param[0] -= (B0_E_u * self.M_basis_time_IC_elements['velocity_int']).flatten()
 
         return
 

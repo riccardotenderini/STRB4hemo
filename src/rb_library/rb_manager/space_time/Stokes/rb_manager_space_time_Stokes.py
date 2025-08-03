@@ -54,9 +54,11 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
         self.M_snapshots_hat = {'velocity': np.zeros(0), 'pressure': np.zeros(0), 'lambda': np.zeros(0)}
         self.M_test_snapshots_matrix = {'velocity': np.zeros(0), 'pressure': np.zeros(0), 'lambda': np.zeros(0)}
 
+        self.M_snapshots_IC = {'velocity': np.zeros(0), 'pressure': np.zeros(0), 'lambda': np.zeros(0)}
+        self.M_test_snapshots_IC = {'velocity': np.zeros(0), 'pressure': np.zeros(0), 'lambda': np.zeros(0)}
+
         self.M_basis_space, self.M_sv_space = dict(), dict()
         self.M_basis_time, self.M_sv_time = dict(), dict()
-        self.M_basis_time_IC = np.zeros(0)
 
         self.M_A_matrix = np.zeros(0)
         self.M_Bdiv_matrix = np.zeros(0)
@@ -85,6 +87,7 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
         self.M_N_params = 0
         self.M_N_lambda_cumulative = np.zeros(0, dtype=np.int16)
         self.M_N_periods = 1
+        self.M_Nt_IC = 0
 
         self.M_n_weak_inlets = 0
         self.M_n_weak_outlets = 0
@@ -158,7 +161,16 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
         self.M_N_periods = _N_periods
         return
 
-    def _load_snapshot_file(self, path, field, save=True, remove=True):
+    @property
+    def Nt_IC(self):
+        return self.M_Nt_IC
+
+    @Nt_IC.setter
+    def Nt_IC(self, _Nt_IC):
+        self.M_Nt_IC = _Nt_IC
+        return
+
+    def _load_snapshot_file(self, path, field, skip_IC=True, save=True, remove=True):
         """
         MODIFY
         """
@@ -193,7 +205,10 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
             if remove:
                 os.remove(filename)
 
-        return cur_data
+        if skip_IC and self.M_Nt_IC > 0:
+            return cur_data[self.M_Nt_IC:], cur_data[self.M_Nt_IC-2:self.M_Nt_IC]
+        else:
+            return cur_data, None
 
     def _load_FEM_vector_file(self, fname):
         """
@@ -310,8 +325,10 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
         new_param = (param[:, idxs] - self.M_shift_param[None, idxs]) / self.M_scale_param[None, idxs]
 
         if erase_constant:
-            idx = np.where(self.M_scale_param == 1.0)
-            new_param = np.delete(new_param, idx[0], axis=1)
+            idx = np.where(self.M_scale_param == 1.0)[0]
+            tmp = np.arange(self.M_scale_param.shape[0])
+            if idx.shape != tmp.shape or np.any(idx != tmp):
+                new_param = np.delete(new_param, idx, axis=1)
 
         return new_param
 
@@ -324,25 +341,11 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
 
         assert self.M_import_snapshots, "Snapshots import disabled"
 
-        if not is_test:
-            snap_u, snap_p = self.M_snapshots_matrix['velocity'], self.M_snapshots_matrix['pressure']
-            snap_lambda = self.M_snapshots_matrix['lambda']
-            snap_params = self.M_offline_ns_parameters
-            path = self.M_snapshots_path
-        else:
-            snap_u, snap_p = self.M_test_snapshots_matrix['velocity'], self.M_test_snapshots_matrix['pressure']
-            snap_lambda = self.M_test_snapshots_matrix['lambda']
-            snap_params = self.M_test_offline_ns_parameters
-            path = self.M_test_snapshots_path
+        snap_mat = self.M_snapshots_matrix if not is_test else self.M_test_snapshots_matrix
+        snap_mat_IC = self.M_snapshots_IC if not is_test else self.M_test_snapshots_IC
+        path = self.M_snapshots_path if not is_test else self.M_test_snapshots_path
 
-        if not arr_utils.is_empty(snap_u) and not arr_utils.is_empty(snap_p) and \
-           all([not arr_utils.is_empty(snap_lambda[n]) for n in range(self.M_n_coupling)]):
-            assert self.M_Nt > 0
-            _ns_cur = int(snap_u.shape[1] / (self.M_Nt * self.M_N_periods))
-            logger.warning(f"{_ns_cur} snapshots already available. Importing {_ns - _ns_cur} new snapshots.")
-        else:
-            _ns_cur = 0
-            logger.info(f"Reading {_ns} snapshots ...")
+        logger.info(f"Reading {_ns} snapshots ...")
 
         count = 0
         if _ns is None:
@@ -350,9 +353,15 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
             while os.path.isdir(os.path.join(path, f'param{_ns}')):
                 _ns += 1
 
-        new_snap_u, new_snap_p, new_snap_lambda, new_snap_params = [], [], {n: [] for n in range(self.M_n_coupling)}, []
+        snap_mat['velocity'], snap_mat['pressure'] = [], []
+        snap_mat['lambda'] = {n: [] for n in range(self.M_n_coupling)}
 
-        for i in range(_ns_cur, _ns):
+        snap_mat_IC['velocity'], snap_mat_IC['pressure'] = [], []
+        snap_mat_IC['lambda'] = {n: [] for n in range(self.M_n_coupling)}
+
+        snap_params = []
+
+        for i in range(_ns):
 
             cur_path = os.path.join(path, f'param{i}')
             is_h5 = os.path.isfile(os.path.join(cur_path, 'block0.h5'))
@@ -363,16 +372,25 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
                 shutil.copy(os.path.join(cur_path, 'block0.xmf'), os.path.join(path, 'Template', 'block0.xmf'))
 
             try:
-                new_snap_u.append(self._load_snapshot_file(cur_path, 'velocity',
-                                                           save=True, remove=not is_h5)[ss_ratio-1::ss_ratio].T)
-                new_snap_p.append(self._load_snapshot_file(cur_path, 'pressure',
-                                                           save=True, remove=True)[ss_ratio-1::ss_ratio].T)
+                tmp_u, tmp_u_IC = self._load_snapshot_file(cur_path, 'velocity',save=True, remove=not is_h5)
+                tmp_p, tmp_p_IC = self._load_snapshot_file(cur_path, 'pressure',save=True, remove=True)
 
-                new_snap_params.append(np.genfromtxt(os.path.join(cur_path, 'coeffile.txt'), delimiter=',')[None])
+                has_IC = tmp_u_IC is not None
+
+                snap_mat['velocity'].append(tmp_u[ss_ratio-1::ss_ratio].T)
+                snap_mat['pressure'].append(tmp_p[ss_ratio-1::ss_ratio].T)
+                if has_IC:
+                    snap_mat_IC['velocity'].append(tmp_u_IC[-1])
+                    snap_mat_IC['pressure'].append(tmp_p_IC[-1])
 
                 for n in range(self.M_n_coupling):
-                    new_snap_lambda[n].append(self._load_snapshot_file(cur_path, f'lambda{n}',
-                                                                       save=True, remove=True)[ss_ratio-1::ss_ratio].T)
+                    tmp_l, tmp_l_IC = self._load_snapshot_file(cur_path, f'lambda{n}', save=True, remove=True)
+
+                    snap_mat['lambda'][n].append(tmp_l[ss_ratio-1::ss_ratio].T)
+                    if has_IC:
+                        snap_mat_IC['lambda'][n].append(tmp_l_IC[-1])
+
+                snap_params.append(np.genfromtxt(os.path.join(cur_path, 'coeffile.txt'), delimiter=',')[None])
 
                 count += 1
 
@@ -382,38 +400,41 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
         if count == 0:
             logger.warning("No snapshots available!")
             return False
-        else:
-            assert new_snap_u[-1].shape[1] % self.M_N_periods == 0, \
-                (f"The total number of FOM time instants ({new_snap_u[-1].shape[1]}) is not a multiple of selected "
-                 f"the number of periods {self.M_N_periods}")
-            self.M_Nt = (new_snap_u[-1].shape[1]) // self.M_N_periods
+
+        assert snap_mat['velocity'][-1].shape[1] % self.M_N_periods == 0, \
+            (f"The number of time instants ({snap_mat['velocity'][-1].shape[1]}) is not a multiple of "
+             f"the number of periods {self.M_N_periods}")
+        self.M_Nt = (snap_mat['velocity'][-1].shape[1]) // self.M_N_periods
+
+        snap_params = np.vstack(snap_params)
+        for field in snap_mat:
+            if type(snap_mat[field]) is list:
+                snap_mat[field] = np.hstack(snap_mat[field])
+                if has_IC:
+                    snap_mat_IC[field] = np.vstack(snap_mat_IC[field])
+            elif type(snap_mat[field]) is dict:
+                for n in snap_mat[field]:
+                    snap_mat[field][n] = np.hstack(snap_mat[field][n])
+                    if has_IC:
+                        snap_mat_IC[field][n] = np.vstack(snap_mat_IC[field][n])
+
+        if not has_IC:
+            for field in set(self.M_valid_fields) - {'lambda'}:
+                snap_mat_IC[field] = np.zeros(0)
+            for n in range(self.M_n_coupling):
+                snap_mat_IC['lambda'][n] = np.zeros(0)
 
         logger.info(f"Number of read snapshots : {count}")
 
-        if _ns_cur == 0:
-            snap_u, snap_p = np.hstack(new_snap_u), np.hstack(new_snap_p)
-            snap_lambda = [np.hstack(_new_snap_lambda) for _,_new_snap_lambda in new_snap_lambda.items()]
-            snap_params = np.vstack(new_snap_params)
-        else:
-            snap_u = np.concatenate((snap_u, np.hstack(new_snap_u)), axis=1)
-            snap_p = np.concatenate((snap_p, np.hstack(new_snap_p)), axis=1)
-            snap_lambda = [np.concatenate((_snap_lambda, np.hstack(_new_snap_lambda)), axis=1)
-                           for (_snap_lambda, (_,_new_snap_lambda)) in zip(snap_lambda, new_snap_lambda.items())]
-            snap_params = np.concatenate((snap_params, np.vstack(new_snap_params)), axis=0)
-
-        logger.debug(f"Size of velocity snapshots matrix : {snap_u.shape}")
-        logger.debug(f"Size of pressure snapshots matrix : {snap_p.shape}")
+        logger.debug(f"Size of velocity snapshots matrix : {snap_mat['velocity'].shape}")
+        logger.debug(f"Size of pressure snapshots matrix : {snap_mat['pressure'].shape}")
         for n in range(self.M_n_coupling):
-            logger.debug(f"Size of multipliers {n} snapshots matrix : {snap_lambda[n].shape}")
+            logger.debug(f"Size of multipliers {n} snapshots matrix : {snap_mat['lambda'][n].shape}")
         logger.debug(f"Size of parameters matrix: {snap_params.shape}")
 
         if not is_test:
-            self.M_snapshots_matrix['velocity'], self.M_snapshots_matrix['pressure'] = snap_u, snap_p
-            self.M_snapshots_matrix['lambda'] = snap_lambda
             self.M_offline_ns_parameters = snap_params
         else:
-            self.M_test_snapshots_matrix['velocity'], self.M_test_snapshots_matrix['pressure'] = snap_u, snap_p
-            self.M_test_snapshots_matrix['lambda'] = snap_lambda
             self.M_test_offline_ns_parameters = snap_params
 
         self._compute_parameter_bounds(is_test=is_test)
@@ -432,7 +453,7 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
         import_success = self._import_snapshots(_ns=_ns, is_test=False, ss_ratio=ss_ratio)
 
         self.M_Nh['velocity'] = self.M_snapshots_matrix['velocity'].shape[0]
-        self.M_ns = int(self.M_snapshots_matrix['velocity'].shape[1] / (self.M_Nt * self.M_N_periods))
+        self.M_ns = self.M_snapshots_matrix['velocity'].shape[1] // (self.M_Nt * self.M_N_periods)
         self.M_Nh['pressure'] = self.M_snapshots_matrix['pressure'].shape[0]
         self.M_Nh['lambda'] = np.array([self.M_snapshots_matrix['lambda'][n].shape[0]
                                         for n in range(self.M_n_coupling)]).astype(int)
@@ -465,7 +486,7 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
         """
 
         if field == 'lambda':
-            assert n <= self.M_n_coupling
+            assert n <= self.M_n_coupling, f"Invalid coupling index {n} for Lagrange multiplier snapshot"
             return self._get_snapshot(self.M_snapshots_matrix['lambda'][n], _snapshot_number,
                                       _fom_coordinates=_fom_coordinates, timesteps=timesteps)
         else:
@@ -479,7 +500,7 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
         """
 
         if field == 'lambda':
-            assert n <= self.M_n_coupling
+            assert n <= self.M_n_coupling, f"Invalid coupling index {n} for Lagrange multiplier snapshot"
             return self._get_snapshot(self.M_test_snapshots_matrix['lambda'][n], _snapshot_number,
                                       _fom_coordinates=_fom_coordinates, timesteps=timesteps)
         else:
@@ -505,8 +526,7 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
         """
         logger.debug("Importing the norm matrices")
 
-        self.M_norm_matrices_bcs = dict()
-        self.M_norm_matrices = dict()
+        self.M_norm_matrices_bcs, self.M_norm_matrices = dict(), dict()
 
         self.M_norm_matrices_bcs['velocity'] = self._load_FEM_matrix_file(os.path.join(self.M_fom_structures_path,
                                                                                        'norm0_bcs'),
@@ -556,9 +576,67 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
         else:
             raise ValueError(f"Invalid shape for the input vector: {vec.shape}")
 
+    def __compute_IC_idxs(self):
+        """Compute the indices of the initial conditions in the snapshots matrix."""
+
+        M = self.M_snapshots_matrix['velocity'].shape[1]
+        idxs = np.arange(0, M + 1, self.M_Nt)
+        idxs = np.array([idx for idx in idxs if idx % (self.M_Nt * self.M_N_periods)])
+
+        return idxs
+
+    def _subtract_IC(self, field="velocity", n=0, include_IC=False):
+        """
+        Subtract initial condition from snapshots spanning more than one period.
+        """
+
+        snap_mat = self.M_snapshots_matrix[field] if field != "lambda" else self.M_snapshots_matrix['lambda'][n]
+
+        idxs = self.__compute_IC_idxs()
+        ICs = snap_mat[:, idxs - 1] if idxs.size else []
+
+        if include_IC:
+            snap_mat_IC = self.M_snapshots_IC[field] if field != "lambda" else self.M_snapshots_IC['lambda'][n]
+            if snap_mat_IC.size:
+                idxs_IC = np.array([k * self.M_Nt * self.M_N_periods + np.arange(self.M_Nt) for k in range(self.M_ns)])
+                for k,idx_IC in enumerate(idxs_IC):
+                    snap_mat[:, idx_IC] -= snap_mat_IC[k, :, None]
+
+        if self.M_N_periods == 1:
+            return None
+
+        for (idx, IC) in zip(idxs, ICs.T):
+            snap_mat[:, idx:idx + self.M_Nt] -= IC[:, None]
+
+        return ICs
+
+    def _restore_IC(self, ICs, field="velocity", n=0, include_IC=False):
+        """
+        Restore initial condition from snapshots spanning more than one period.
+        """
+
+        snap_mat = self.M_snapshots_matrix[field] if field != "lambda" else self.M_snapshots_matrix['lambda'][n]
+
+        if include_IC:
+            snap_mat_IC = self.M_snapshots_IC[field] if field != "lambda" else self.M_snapshots_IC['lambda'][n]
+            if snap_mat_IC.size:
+                idxs_IC = np.array([k * self.M_Nt * self.M_N_periods + np.arange(self.M_Nt) for k in range(self.M_ns)])
+                for k,idx_IC in enumerate(idxs_IC):
+                    snap_mat[:, idx_IC] += snap_mat_IC[k, :, None]
+
+        if self.M_N_periods == 1 or ICs is None:
+            return
+
+        idxs = self.__compute_IC_idxs()
+
+        for (idx, IC) in zip(idxs, ICs.T):
+            snap_mat[:, idx:idx + self.M_Nt] += IC[:, None]
+
+        return
+
     def perform_pod_space(self, _tol=1e-3, field="velocity"):
         """
-        MODIFY
+        Perform the POD in space for the given field.
         """
 
         logger.info(f"Performing the POD in space for {field}, using a tolerance of {_tol:.2e}")
@@ -573,19 +651,53 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
             self.M_basis_space['lambda'] = [np.zeros(0)] * self.M_n_coupling
             self.M_sv_space['lambda'] = [np.zeros(0)] * self.M_n_coupling
             for n in range(self.M_n_coupling):
-                pod(self.M_snapshots_matrix['lambda'][n], _tol=_tol)
+                ICs = self._subtract_IC(field='lambda', n=n, include_IC=True)
+                snap_mat = (self.M_snapshots_matrix['lambda'][n] if self.M_Nt_IC == 0 else
+                            np.hstack([self.M_snapshots_matrix['lambda'][n], self.M_snapshots_IC['lambda'][n].T]))
+                pod(snap_mat, _tol=_tol, _norm_matrix=None)
+                self._restore_IC(ICs, field='lambda', n=n, include_IC=True)
                 self.M_basis_space['lambda'][n], self.M_sv_space['lambda'][n] = pod.basis, pod.singular_values
                 self.M_N_space['lambda'][n] = self.M_basis_space['lambda'][n].shape[1]
         else:
-            pod(self.M_snapshots_matrix[field], _tol=_tol, _norm_matrix=self.M_norm_matrices[field])
+            ICs = self._subtract_IC(field=field, include_IC=True)
+            snap_mat = (self.M_snapshots_matrix[field] if self.M_Nt_IC == 0 else
+                        np.hstack([self.M_snapshots_matrix[field], self.M_snapshots_IC[field].T]))
+            pod(snap_mat, _tol=_tol, _norm_matrix=self.M_norm_matrices[field])
+            self._restore_IC(ICs, field=field, include_IC=True)
             self.M_basis_space[field], self.M_sv_space[field] = pod.basis, pod.singular_values
             self.M_N_space[field] = self.M_basis_space[field].shape[1]
 
         return
 
+    def __time_unfold_matrix(self, field='velocity', n=0, method='reduced'):
+        """Unfold the snapshots' matrix to enable POD in time."""
+
+        Nh = self.M_Nh[field][n] if field == 'lambda' else self.M_Nh[field]
+        N_space = self.M_N_space[field][n] if field == 'lambda' else self.M_N_space[field]
+        snap_mat = self.M_snapshots_matrix[field][n] if field == 'lambda' else self.M_snapshots_matrix[field]
+
+        _Nt = self.M_Nt * self.M_N_periods
+
+        if method == 'full':
+            _Nh = Nh * self.M_N_periods
+            ret_mat = np.zeros((self.M_Nt, _Nh * self.M_ns))
+            for iNs in range(self.M_ns):
+                tmp = snap_mat[:, iNs * _Nt:(iNs + 1) * _Nt].T
+                ret_mat[:, iNs * _Nh:(iNs + 1) * _Nh] = np.reshape(tmp, (self.M_Nt, _Nh), order='F')
+        elif method == 'reduced':
+            _Nh = N_space * self.M_N_periods
+            ret_mat = np.zeros((self.M_Nt, _Nh * self.M_ns))
+            for iNs in range(self.M_ns):
+                tmp = snap_mat[:, iNs * _Nt:(iNs + 1) * _Nt].T.dot(self.M_basis_space[field])
+                ret_mat[:, iNs * _Nh:(iNs + 1) * _Nh] = np.reshape(tmp, (self.M_Nt, _Nh), order='F')
+        else:
+            raise ValueError(f"Unrecognized method {method} for the temporal POD")
+
+        return ret_mat
+
     def perform_pod_time(self, _tol=1e-3, method='reduced', field="velocity"):
         """
-        MODIFY
+        Perform the POD in time for the given field.
         """
 
         logger.info(f"Performing the POD in time for {field}, using a tolerance of {_tol:.2e} "
@@ -598,41 +710,76 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
             self.M_basis_time['lambda'] = [np.zeros(0)] * self.M_n_coupling
             self.M_sv_time['lambda'] = [np.zeros(0)] * self.M_n_coupling
             for n in range(self.M_n_coupling):
-                time_unfold_snapshots_matrix = np.zeros((self.M_Nt,
-                                                         self.M_Nh['lambda'][n] * self.M_ns * self.M_N_periods))
-                _Nh = self.M_Nh['lambda'][n] * self.M_N_periods
-                for iNs in range(self.M_ns):
-                    time_unfold_snapshots_matrix[:, iNs * _Nh:(iNs + 1) * _Nh] = \
-                        self.M_snapshots_matrix['lambda'][n][:, iNs * _Nt:(iNs + 1) * _Nt].T
+                ICs = self._subtract_IC(field='lambda', n=n, include_IC=True)
+
+                time_unfold_snapshots_matrix = self.__time_unfold_matrix(field='lambda', n=n, method=method)
 
                 pod = podec.ProperOrthogonalDecomposition()
                 pod(time_unfold_snapshots_matrix, _tol)
+
+                self._restore_IC(ICs, field='lambda', n=n, include_IC=True)
+
                 self.M_basis_time['lambda'][n], self.M_sv_time['lambda'][n] = pod.basis, pod.singular_values
                 self.M_N_time['lambda'][n] = self.M_basis_time['lambda'][n].shape[1]
 
         else:
+            ICs = self._subtract_IC(field=field, include_IC=True)
 
-            if method == 'full':
-                time_unfold_snapshots_matrix = np.zeros((self.M_Nt,
-                                                         self.M_Nh[field] * self.M_ns * self.M_N_periods))
-                _Nh = self.M_Nh[field] * self.M_N_periods
-                for iNs in range(self.M_ns):
-                    time_unfold_snapshots_matrix[:, iNs * _Nh:(iNs + 1) * _Nh] = \
-                        self.M_snapshots_matrix[field][:, iNs * _Nt:(iNs + 1) * _Nt].T
-            elif method == 'reduced':
-                time_unfold_snapshots_matrix = np.zeros((self.M_Nt,
-                                                         self.M_N_space[field] * self.M_ns * self.M_N_periods))
-                _Nh = self.M_N_space[field] * self.M_N_periods
-                for iNs in range(self.M_ns):
-                    time_unfold_snapshots_matrix[:, iNs * _Nh:(iNs + 1) * _Nh] = \
-                        self.M_snapshots_matrix[field][:, iNs * self.M_Nt:(iNs + 1) * self.M_Nt].T.dot(self.M_basis_space[field])
-            else:
-                raise ValueError(f"Unrecognized method {method} for the temporal POD")
+            time_unfold_snapshots_matrix = self.__time_unfold_matrix(field=field, method=method)
 
             pod = podec.ProperOrthogonalDecomposition()
             pod(time_unfold_snapshots_matrix, _tol)
+
+            self._restore_IC(ICs, field=field, include_IC=True)
+
             self.M_basis_time[field], self.M_sv_time[field] = pod.basis, pod.singular_values
             self.M_N_time[field] = self.M_basis_time[field].shape[1]
+
+        return
+
+    @staticmethod
+    def real_fourier_basis(N, Nt, add_constant=False, only_sin=False):
+        """Build a discrete real-valued Fourier basis in 1D."""
+
+        basis = []
+
+        if only_sin:
+            for k in range(1, N+1):
+                sin_vector = np.sqrt(2 / Nt) * np.sin(np.pi * k * np.arange(Nt) / Nt)
+                basis.append(sin_vector)
+
+        else:
+
+            if add_constant:
+                basis.append(np.ones(Nt) / np.sqrt(Nt))
+                N -= 1
+
+            for k in range(1, N // 2 + 1):
+                cos_vector = np.sqrt(2 / Nt) * np.cos(2 * np.pi * k * np.arange(Nt) / Nt)
+                basis.append(cos_vector)
+                sin_vector = np.sqrt(2 / Nt) * np.sin(2 * np.pi * k * np.arange(Nt) / Nt)
+                basis.append(sin_vector)
+
+            if N % 2:
+                cos_vector = np.sqrt(2 / Nt) * np.cos(2 * np.pi * (N // 2 + 1) * np.arange(Nt) / Nt)
+                basis.append(cos_vector)
+
+        basis_matrix = np.vstack(basis).T
+
+        return basis_matrix
+
+    def time_basis_fourier(self, N, field="velocity"):
+        """Use the discrete real-valued Fourier modes as reduced basis elements in time."""
+
+        Vt = self.real_fourier_basis(N, self.M_Nt+1, add_constant=False, only_sin=True)[1:]  # keep only sines
+
+        if field == "lambda":
+            for n in range(self.M_n_coupling):
+                self.M_basis_time[field][n], self.M_sv_time[field][n] = Vt, np.ones(N)
+                self.M_N_time[field][n] = N
+        else:
+            self.M_basis_time[field], self.M_sv_time[field] = Vt, np.ones(N)
+            self.M_N_time[field] = N
 
         return
 
@@ -644,7 +791,7 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
         if not self.check_norm_matrices():
             self.get_norm_matrices()
 
-        logger.debug("===== ADDING PRIMAL SUPREMIZERS IN SPACE ====")
+        logger.info("Adding primal supremizers in space")
 
         if stabilize:
             logger.debug("Computing the stabilized primal supremizers in space")
@@ -678,7 +825,7 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
                 supr_primal[:, i] -= arr_utils.mydot(supr_primal[:, i], supr_primal[:, j], self.M_norm_matrices['velocity']) * \
                                      supr_primal[:, j]
 
-            supr_primal[:, i] /= self.compute_norm(supr_primal[:, i],field='velocity')
+            supr_primal[:, i] /= self.compute_norm(supr_primal[:, i], field='velocity')
 
         supr_primal[np.abs(supr_primal) < 1e-15] = 0
         self.supr_primal = supr_primal
@@ -689,6 +836,7 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
         """
         MODIFY
         """
+
         if field == 'velocity':
             logger.warning("Invalid field 'velocity' for the temporal supremizers assembling")
             return
@@ -744,7 +892,7 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
         """
         MODIFY
         """
-        logger.debug("===== ADDING PRIMAL SUPREMIZERS IN TIME ====")
+        logger.info("Adding primal stabilizers in time")
         logger.debug(f"Selected tolerance: {tol:.2f}")
 
         self.time_supremizers(field='pressure', tol=tol)
@@ -759,7 +907,7 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
         if not self.check_norm_matrices():
             self.get_norm_matrices()
 
-        logger.debug("===== ADDING DUAL SUPREMIZERS IN SPACE ====")
+        logger.info("Adding dual supremizers in space")
 
         FEM_structures = {'Bdiv', 'B'} if stabilize else {'B'}
         FEM_matrices = self.import_FEM_structures(structures=FEM_structures)
@@ -808,7 +956,7 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
         """
         MODIFY
         """
-        logger.debug("===== ADDING DUAL SUPREMIZERS IN TIME ====")
+        logger.debug("Adding dual stabilizers in time")
         logger.debug(f"Selected tolerance: {tol:.2f}")
 
         for n in range(self.M_n_coupling):
@@ -818,18 +966,8 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
 
     def build_IC_basis_elements(self):
         """
-        Build the temporal basis needed to impose the ICs
+        Build quantities needed to enforce initial conditions.
         """
-
-        S = len(self.M_bdf)
-        _, Nt = self.M_fom_problem.time_specifics
-
-        IC_elements = np.pad(np.eye(S), ((0, 0), (0, Nt)))
-        for t in range(Nt):
-            IC_elements[:, t+S] = - sum([self.M_bdf[k] * IC_elements[:, t+S-k-1] for k in range(S)])
-
-        self.M_basis_time_IC = IC_elements[:, S:]
-
         return
 
     def build_ST_basis(self, *args, **kwargs):
@@ -853,7 +991,7 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
         MODIFY
         """
 
-        assert _type in {'space', 'time'}, f"Invalid basis type: {_type}"
+        assert _type in {'space', 'time'}
 
         basis = self.M_basis_space if _type == 'space' else self.M_basis_time if _type == 'time' else dict()
         sv = self.M_sv_space if _type == 'space' else self.M_sv_time if _type == 'time' else dict()
@@ -1011,7 +1149,8 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
 
         import_failures_basis = set(filter(None, import_failures_basis))
 
-        self.build_IC_basis_elements()
+        if not import_failures_basis:
+            self.build_IC_basis_elements()
 
         if not({'velocity-space', 'velocity-time'} & import_failures_basis):
             self.M_N['velocity'] = self.M_N_space['velocity'] * self.M_N_time['velocity']
@@ -1137,7 +1276,6 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
                 k_in = 0
                 assert os.path.isfile(path_in(k_in)), "No inflow rate vectors available"
                 while os.path.isfile(path_in(k_in)):
-                    # matrices['q_in'].append(np.loadtxt(path_in(k_in)))
                     matrices['q_in'].append(self._load_FEM_vector_file(path_in(k_in)))
                     k_in += 1
                 self.M_n_inlets = k_in
@@ -1147,14 +1285,12 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
                 k_out = 0
                 assert os.path.isfile(path_out(k_out)), "No outflow rate vectors available"
                 while os.path.isfile(path_out(k_out)):
-                    # matrices['q_out'].append(np.loadtxt(path_out(k_out)))
                     matrices['q_out'].append(self._load_FEM_vector_file(path_out(k_out)))
                     k_out += 1
                 self.M_n_outlets = k_out
 
         except (IOError, OSError, FileNotFoundError, AssertionError) as e:
-            logger.error(f"Error {e}: impossible to load the FEM matrices and FEM RHS")
-            raise ValueError
+            raise ValueError(f"Error {e}: impossible to load the FEM matrices and FEM RHS")
 
         return matrices
 
@@ -1207,9 +1343,8 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
         super().reset_reduced_structures()
 
         if self.M_n_coupling == 0:
-            logger.error("Number of coupling is set to zero: run the function define_geometry_info() before calling "
-                         "reset_reduced_structures()")
-            raise ValueError
+            raise ValueError("Number of coupling is set to zero: run the function define_geometry_info() before calling "
+                             "reset_reduced_structures()")
 
         self.M_Bdiv_matrix = np.zeros(0)
         self.M_BdivT_matrix = np.zeros(0)
@@ -1236,9 +1371,8 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
         # super().reset_rb_approximation()
 
         if self.M_n_coupling == 0:
-            logger.error("Number of coupling is set to zero: run the function define_geometry_info() before calling "
-                         "reset_reduced_structures()")
-            raise ValueError
+            raise ValueError("Number of coupling is set to zero: run the function define_geometry_info() before calling "
+                             "reset_reduced_structures()")
 
         self.M_Nh = {'velocity': 0, 'pressure': 0, 'lambda': np.zeros(0, dtype=np.int16)}
         self.M_N = {'velocity': 0, 'pressure': 0, 'lambda': np.zeros(0, dtype=np.int16)}
@@ -1357,10 +1491,8 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
         logger.debug("Projecting the initial condition")
         try:
             initial_condition = self.import_FEM_structures(structures={'u0'})
-            self.M_u0['velocity'] = np.zeros((2, self.M_N_space['velocity']))
-            for k in range(2):
-                self.M_u0['velocity'][k] = self.project_vector(initial_condition['u0'][k], self.M_basis_space['velocity'],
-                                                               norm_matrix=self.M_norm_matrices['velocity'])
+            self.M_u0['velocity'] = self.project_vector(initial_condition['u0'].T, self.M_basis_space['velocity'],
+                                                        norm_matrix=self.M_norm_matrices['velocity']).T
         except ValueError:
             logger.warning("Impossible to load the initial condition. Proceeding with homogeneous initial condition")
             self.M_u0['velocity'] = np.zeros((2, self.M_N_space['velocity']))
@@ -1487,9 +1619,8 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
         if import_success:
             self.M_N_space['velocity'] = self.M_A_matrix.shape[0]
             self.M_N_space['pressure'] = self.M_Bdiv_matrix.shape[0]
-            self.M_Nh['lambda'] = np.array([self.M_B_matrix[n].shape[0] for n in range(self.M_n_coupling)])
-            self.M_N_space['lambda'] = self.M_Nh['lambda']
-            self.M_N['lambda'] = self.M_Nh['lambda'] * self.M_N_time['lambda']
+            self.M_N_space['lambda'] = np.array([self.M_B_matrix[n].shape[0] for n in range(self.M_n_coupling)])
+            self.M_N['lambda'] = self.M_N_space['lambda'] * self.M_N_time['lambda']
             self.M_N_lambda_cumulative = np.cumsum(np.vstack([self.M_N['lambda'][n] for n in range(self.M_n_coupling)]))
             self.M_N_lambda_cumulative = np.insert(self.M_N_lambda_cumulative, 0, 0)
 
@@ -1531,18 +1662,18 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
         u_fom, p_fom, l_fom = None, None, None
 
         if field == "all":
-            u_fom = x_fom[:self.M_Nh['velocity']]
-            p_fom = x_fom[self.M_Nh['velocity']:self.M_Nh['velocity']+self.M_Nh['pressure']]
+            u_fom = x_fom[:self.M_Nh['velocity'], :self.M_Nt]
+            p_fom = x_fom[self.M_Nh['velocity']:self.M_Nh['velocity']+self.M_Nh['pressure'], :self.M_Nt]
             NL_cum = np.hstack([np.array([0]), np.cumsum(self.M_Nh['lambda'])])
             l_fom = [x_fom[self.M_Nh['velocity']+self.M_Nh['pressure']+NL_cum[n]:
-                           self.M_Nh['velocity']+self.M_Nh['pressure']+NL_cum[n+1]]
+                           self.M_Nh['velocity']+self.M_Nh['pressure']+NL_cum[n+1], :self.M_Nt]
                      for n in range(self.M_n_coupling)]
         elif field == "velocity":
-            u_fom = x_fom
+            u_fom = x_fom[:, :self.M_Nt]
         elif field == "pressure":
-            p_fom = x_fom
+            p_fom = x_fom[:, :self.M_Nt]
         elif field == "lambda":
-            l_fom = x_fom
+            l_fom = x_fom[:, :self.M_Nt]
         else:
             logger.warning(f"Unrecognized field {field}!")
             return None
@@ -1569,7 +1700,7 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
             l_rb = [np.zeros(0)] * self.M_n_coupling
             for n in range(self.M_n_coupling):
                 l_rb[n] = _project(l_fom[n], self.M_basis_space['lambda'][n],
-                                self.M_basis_time['lambda'][n] if hasattr(self, 'M_basis_time') else None)
+                                   self.M_basis_time['lambda'][n] if hasattr(self, 'M_basis_time') else None)
             l_rb = np.hstack([l_rb[n] for n in range(self.M_n_coupling)])
 
         x_rb = (np.hstack([u_rb, p_rb, l_rb]) if field == "all" else
@@ -1607,9 +1738,11 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
 
             logger.debug(f"Computing generalized coordinates of snapshot {iP}")
 
-            u_fom = self.M_snapshots_matrix['velocity'][:, iP * self.M_Nt:(iP + 1) * self.M_Nt]
-            p_fom = self.M_snapshots_matrix['pressure'][:, iP * self.M_Nt:(iP + 1) * self.M_Nt]
-            l_fom = np.vstack([self.M_snapshots_matrix['lambda'][n][:, iP * self.M_Nt:(iP + 1) * self.M_Nt]
+            _Nt = self.M_Nt * self.M_N_periods
+
+            u_fom = self.M_snapshots_matrix['velocity'][:, iP * _Nt:iP * _Nt + self.M_Nt]
+            p_fom = self.M_snapshots_matrix['pressure'][:, iP * _Nt:iP * _Nt + self.M_Nt]
+            l_fom = np.vstack([self.M_snapshots_matrix['lambda'][n][:, iP * _Nt:iP * _Nt + self.M_Nt]
                                for n in range(self.M_n_coupling)])
             x_fom = np.vstack([u_fom, p_fom, l_fom])
 
@@ -1715,8 +1848,8 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
                                                          self.M_basis_time['lambda'][n][times])
 
                     if self._has_IC(field='lambda', n=n):
-                        _l0 = np.dot(self.M_basis_space['lambda'][n], self.M_u0['lambda'][n].T).T
-                        lambdatildeh[n] += np.sum(_l0[..., None] * self.M_basis_time_IC[:, None], axis=0)
+                        _l0 = np.dot(self.M_basis_space['lambda'][n], self.M_u0['lambda'][n][-1])  # (N_l^s,)
+                        lambdatildeh[n] += _l0[..., None] * np.ones(self.M_Nt)[None]
 
                 self.M_utildeh['lambda'] = lambdatildeh
 
@@ -1730,8 +1863,8 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
                                                            self.M_basis_time[field][times])
 
                 if self._has_IC(field):
-                    _u0 = np.dot(self.M_basis_space[field], self.M_u0[field].T).T
-                    self.utildeh[field] += np.sum(_u0[..., None] * self.M_basis_time_IC[:, None], axis=0)
+                    _u0 = np.dot(self.M_basis_space[field], self.M_u0[field][-1])  # (N_u^s,)
+                    self.utildeh[field] += _u0[..., None] * np.ones(self.M_Nt)[None]
 
         return
 
@@ -1780,9 +1913,8 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
                            f"I would need to compute {_ns - self.M_ns} more!")
 
         if not import_success_snapshots and import_failures_basis:
-            logger.critical("Impossible to assemble the reduced problem if neither the snapshots nor the bases "
-                            "can be loaded!")
-            raise ValueError
+            raise ValueError("Impossible to assemble the reduced problem if neither the snapshots nor the bases "
+                             "can be loaded!")
 
         import_reduced_ac = self.M_import_offline_structures
         if import_success_snapshots and (import_failures_basis is None or len(import_failures_basis)):
@@ -1818,6 +1950,7 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
                 start = time.time()
                 self.build_rb_affine_decompositions()
                 logger.debug(f"Assembling of space-time-reduced structures performed in {(time.time()-start):.4f} s")
+
         return
 
     def build_rb_affine_decompositions(self, operators=None):
@@ -2169,6 +2302,7 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
 
         logger.debug(f"Solving RB problem for initial parameter {_param} and {n_cycles} cycles")
 
+        fom_rec_time = 0
         for n in range(n_cycles):
             if update_T:
                 self.M_fom_problem.M_fom_specifics['final_time'] = param_trace['T'][n]
@@ -2180,6 +2314,8 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
             if update_T or update_params or n == 0:
                 self.set_param_functions()
                 self.build_reduced_problem(_param)  # rebuild parameter-dependent terms
+            else:
+                self.build_rb_RHS()  # rebuild only the RHS vector, potentially changed after IC update
 
             logger.debug(f"Cycle {n} - Value of T: {self.dt*Nt:.2e}")
             status = self._solve(_param=_param)
@@ -2191,15 +2327,19 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
             solutions[n] = np.copy(self.M_un)
             dts[n] = self.dt
 
-            if self.M_save_results:
-                self.reconstruct_fem_solution(self.M_un)
+            start1 = time.perf_counter()
 
-                for field in self.M_utildeh:
-                    solutions_fem[n][field] = self.M_utildeh[field]
+            self.reconstruct_fem_solution(self.M_un)
 
-            self.update_IC_terms(update_IC=True)  # update IC-related terms
+            for field in self.M_utildeh:
+                solutions_fem[n][field] = self.M_utildeh[field]
 
-        return solutions, solutions_fem, dts
+            fom_rec_time += time.perf_counter() - start1
+
+            if n < n_cycles - 1:
+                self._update_IC()  # update the initial condition
+
+        return solutions, solutions_fem, dts, fom_rec_time
 
     @staticmethod
     def _sample_from_gpr(kernel, M, m, n_samples=1, n_cycles=1, seed=0, K=10):
@@ -2402,7 +2542,7 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
         raise NotImplementedError("This method is not implemented by this class")
 
     def _has_IC(self, field='velocity', n=0):
-        if field not in {'lambda'}:
+        if field != 'lambda':
             return field in self.M_u0 and np.linalg.norm(self.M_u0[field]) > 0
         else:
             return field in self.M_u0 and np.linalg.norm(self.M_u0[field][n]) > 0
@@ -2450,15 +2590,18 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
         MODIFY
         """
 
-        return (coeff * self.M_f_Blocks_no_param[idx] +
-                (param_coeff * self.M_f_Blocks_param[idx] if idx in self.M_f_Blocks_param.keys() else 0))
+        return (coeff * self.M_f_Blocks_no_param[idx] + param_coeff * self.M_f_Blocks_param[idx]
+                if idx in self.M_f_Blocks_param.keys()
+                else coeff * self.M_f_Blocks_no_param[idx])
 
-    def build_rb_RHS(self, param):
+    def build_rb_RHS(self, param=None):
         """
         MODIFY
         """
 
-        self.build_rb_parametric_RHS(param)
+        self.build_rb_nonparametric_RHS()
+        if param is not None:
+            self.build_rb_parametric_RHS(param)
 
         self.M_f_Block = np.hstack([self._get_f_block(0), self._get_f_block(1), self._get_f_block(2)])
 
@@ -2573,6 +2716,7 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
         self.M_un = np.zeros(0)
         self.M_u_hat = dict()
         self.M_utildeh = dict()
+        self.M_u0 = dict()
 
         return
 
@@ -2581,8 +2725,9 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
         MODIFY
         """
 
-        self.M_relative_error['velocity'], self.M_relative_error['velocity-l2'] = np.zeros(self.M_Nt), 0.0
-        self.M_relative_error['pressure'], self.M_relative_error['pressure-l2'] = np.zeros(self.M_Nt), 0.0
+        for field in set(self.M_valid_fields) - {'lambda'}:
+            self.M_relative_error[field] = np.zeros(self.M_Nt * self.M_N_periods)
+            self.M_relative_error[field + '-l2'] = 0.0
 
         return
 
@@ -2594,10 +2739,79 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
         if N is None:
             N = 1
 
-        self.M_relative_error['velocity'] += self.M_cur_errors['velocity'] / N
-        self.M_relative_error['velocity-l2'] += self.M_cur_errors['velocity-l2'] / N
-        self.M_relative_error['pressure'] += self.M_cur_errors['pressure'] / N
-        self.M_relative_error['pressure-l2'] += self.M_cur_errors['pressure-l2'] / N
+        for field in set(self.M_valid_fields) - {'lambda'}:
+            self.M_relative_error[field] += self.M_cur_errors[field] / N
+            self.M_relative_error[field + '-l2'] += self.M_cur_errors[field + '-l2'] / N
+
+        return
+
+    def load_IC(self, param_nb, is_test=False, ss_ratio=1):
+        """
+        Load initial conditions from file, considering the last two timesteps of the first period
+        """
+
+        if not self.check_norm_matrices():
+            self.get_norm_matrices()
+
+        snapshots_path = self.M_test_snapshots_path if is_test else self.M_snapshots_path
+
+        for field in set(self.M_valid_fields) - {'lambda'}:
+            u0 = self._load_snapshot_file(os.path.join(snapshots_path, f'param{param_nb}'), field,
+                                          save=False, remove=False)[1]
+            if u0 is not None:
+                norm_mat = self.M_norm_matrices[field] if field != "displacement" else self.M_norm_matrices['velocity']
+                self.M_u0[field] = self.project_vector(u0.T, self.M_basis_space[field],
+                                                       norm_matrix=norm_mat).T
+
+        self.M_u0['lambda'] = [np.zeros(0)] * self.M_n_coupling
+        for n in range(self.M_n_coupling):
+            u0 = self._load_snapshot_file(os.path.join(snapshots_path, f'param{param_nb}'), f"lambda{n}",
+                                          save=False, remove=False)[1]
+            if u0 is not None:
+                self.M_u0['lambda'][n] = self.project_vector(u0.T, self.M_basis_space['lambda'][n], norm_matrix=None).T
+
+        return
+
+    def _reconstruct_IC(self, field, n=0):
+        """
+        Reconstruct the initial condition for a given field from the available solution
+        """
+        raise NotImplementedError
+
+    def _update_IC(self):
+        """
+        Update initial conditions
+        """
+
+        # sorted is crucial, so that displacement is updated before velocity in membrane model !
+        for field in sorted(set(self.M_valid_fields) - {'lambda'}):
+            # tmp = np.copy(self.M_u0[field])
+            self.M_u0[field] = self._reconstruct_IC(field)
+            # diff = np.linalg.norm(self.M_u0[field][0] - tmp[0]) / np.linalg.norm(tmp[0])
+            # logger.warning(f"{field} initial condition relative change: {diff:.2e}")
+
+        for n in range(self.M_n_coupling):
+            self.M_u0['lambda'][n] = self._reconstruct_IC('lambda', n=n)
+
+        return
+
+    def compute_flow_rates(self, param_nb, solutions_fem, dts, is_test=False, **kwargs):
+        """Compute flow rates at inlets and outlets based on the obtained velocity field."""
+
+        _, Nt = self.M_fom_problem.time_specifics
+        windows = [np.sum(dts[:i]) * Nt for i in range(kwargs['n_cycles'])]
+        times = np.concatenate([np.linspace(np.sum(dts[:i]) * Nt + dts[i], np.sum(dts[:i + 1]) * Nt, Nt)
+                                for i in range(kwargs['n_cycles'])])
+
+        FEM_matrices = self.import_FEM_structures(structures={'q'})
+        inflow_rates = [np.hstack([FEM_matrices['q_in'][k].dot(solutions_fem[i]['velocity'])
+                                   for i in range(kwargs['n_cycles'])])
+                        for k in range(self.M_n_inlets)]
+        outflow_rates = [np.hstack([FEM_matrices['q_out'][k].dot(solutions_fem[i]['velocity'])
+                                    for i in range(kwargs['n_cycles'])])
+                         for k in range(self.M_n_outlets)]
+
+        self._save_flow_rates(inflow_rates, outflow_rates, times, windows, param_nb, is_test=is_test)
 
         return
 
@@ -2629,6 +2843,8 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
         self.M_cur_errors = self.compute_online_errors(param_nb, is_test=is_test, ss_ratio=ss_ratio)
         self._update_errors()
         self._save_results_snapshot(param_nb, self.M_cur_errors, is_test=is_test)
+
+        self.compute_flow_rates(param_nb, [self.M_utildeh], [self.dt], is_test=is_test, n_cycles=1)
 
         return status, elapsed_time
 
@@ -2683,40 +2899,44 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
         fname = os.path.join(snapshots_path, f'param{param_nb}', 'coeffile.txt')
         param = np.genfromtxt(fname, delimiter=',')
 
-        solutions, solutions_fem, dts = self.solve_reduced_problem_iteratively(param, **kwargs)
+        solutions, solutions_fem, dts, fom_rec_time = self.solve_reduced_problem_iteratively(param, **kwargs)
         status = solutions is None
 
         if status:
             return 1, 0.0
 
-        elapsed_time = time.perf_counter() - start
+        elapsed_time = time.perf_counter() - start - fom_rec_time
         logger.info(f"Online execution wall time (with eventual FEM exporting): {elapsed_time:.4f} s")
 
-        if self.M_save_results:
-            results_dir = os.path.join(self.M_results_path, f'param{param_nb}' + ('_test' if is_test else ''))
-            gen_utils.create_dir(results_dir)
+        results_dir = os.path.join(self.M_results_path, f'param{param_nb}' + ('_test' if is_test else ''))
+        gen_utils.create_dir(results_dir)
 
-            _, Nt = self.M_fom_problem.time_specifics
-            windows = [np.sum(dts[:i]) * Nt for i in range(kwargs['n_cycles'] + 1)]
-            times = np.concatenate([np.linspace(np.sum(dts[:i]) * Nt + dts[i], np.sum(dts[:i+1]) * Nt, Nt)
-                                    for i in range(kwargs['n_cycles'])])
-
-            FEM_matrices = self.import_FEM_structures(structures={'q'})
-            inflow_rates = [np.hstack([FEM_matrices['q_in'][k].dot(solutions_fem[i]['velocity'])
-                                       for i in range(kwargs['n_cycles'])])
-                            for k in range(self.M_n_inlets)]
-            outflow_rates = [np.hstack([FEM_matrices['q_out'][k].dot(solutions_fem[i]['velocity'])
-                                        for i in range(kwargs['n_cycles'])])
-                             for k in range(self.M_n_outlets)]
-
-            self._save_flow_rates(inflow_rates, outflow_rates, times, windows, param_nb, is_test=is_test)
-
+        if self.M_N_periods == kwargs['n_cycles']:
             for field in solutions_fem[0]:
                 if field not in {'lambda'}:
-                    self.M_utildeh[field] = np.hstack([solutions_fem[n][field] for n in range(kwargs['n_cycles'])])
+                    self.M_utildeh[field] = np.hstack([solutions_fem[n][field]
+                                                       for n in range(kwargs['n_cycles'])])
+                else:
+                    self.M_utildeh['lambda'] = [np.zeros(0)] * self.M_n_coupling
+                    for _n in range(self.M_n_coupling):
+                        self.M_utildeh['lambda'][_n] = np.hstack([solutions_fem[n]['lambda'][_n]
+                                                                  for n in range(kwargs['n_cycles'])])
 
-            # self._save_solution(param_nb, results_dir, is_test=is_test, n_cycles=kwargs['n_cycles'],
-            #                     save_reduced=False, save_full=True, save_FOM=False, save_lambda=False)
+            self.M_cur_errors = self.compute_online_errors(param_nb, is_test=is_test)
+            self._update_errors()
+            self._save_errors(self.M_cur_errors, results_dir)
+
+        self.compute_flow_rates(param_nb, solutions_fem, dts, is_test=is_test, **kwargs)
+
+        if self.M_save_results:
+
+            if not self.M_utildeh:
+                for field in solutions_fem[0]:
+                    if field not in {'lambda'}:
+                        self.M_utildeh[field] = np.hstack([solutions_fem[n][field] for n in range(kwargs['n_cycles'])])
+
+            self._save_solution(param_nb, results_dir, is_test=is_test, n_cycles=kwargs['n_cycles'],
+                                save_reduced=False, save_full=True, save_FOM=False, save_lambda=False)
 
         return 0, elapsed_time
 
@@ -2735,6 +2955,9 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
 
         solves_cnt = 0
         for param_nb in param_nbs:
+
+            self.load_IC(param_nb, is_test=is_test, ss_ratio=ss_ratio)
+
             if cycles_specifics['n_cycles'] == 1:
                 status, elapsed_time = self.solve_pipeline(param_nb, is_test=is_test, ss_ratio=ss_ratio, **kwargs)
             else:
@@ -2745,6 +2968,7 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
                 self.M_online_mean_time += elapsed_time
 
             self._reset_solution()
+            self.update_IC_terms(update_IC=False)  # to zero-out the IC-related terms
 
         if solves_cnt > 0:
             self.M_relative_error = {key: self.M_relative_error[key] / solves_cnt for key in self.M_relative_error}
@@ -2771,13 +2995,13 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
 
         if save_FOM:
             snap_velocity = self._load_snapshot_file(os.path.join(snapshots_path, f'param{param_nb}'), 'velocity',
-                                                     save=False, remove=False).T
+                                                     save=False, remove=False)[0].T
             snap_pressure = self._load_snapshot_file(os.path.join(snapshots_path, f'param{param_nb}'), 'pressure',
-                                                     save=False, remove=False).T
+                                                     save=False, remove=False)[0].T
             snap_lambda = []
             for n in range(self.M_n_coupling):
                 snap_lambda.append(self._load_snapshot_file(os.path.join(snapshots_path, f'param{param_nb}'), f'lambda{n}',
-                                                            save=False, remove=False).T)
+                                                            save=False, remove=False)[0].T)
 
             FEM_folder_name = os.path.join(save_path, 'FEM', 'Block0')
             gen_utils.create_dir(FEM_folder_name)
@@ -2873,8 +3097,9 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
         if data is None:
             data = dict()
 
-        data["velocity"] = errors['velocity-l2']
-        data["pressure"] = errors['pressure-l2']
+        for field in set(self.M_valid_fields) - {'lambda'}:
+            data[field] = errors[field + '-l2']
+
         for n in range(self.M_n_coupling):
             data[f"Lagrange multipliers {n}"] = errors['lambda-l2'][n]
 
@@ -2892,6 +3117,10 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
 
         with open(os.path.join(errors_folder_name, 'errors.json'), "w") as file:
             json.dump(data, file)
+
+        for field in set(self.M_valid_fields) - {'lambda'}:
+            np.save(os.path.join(errors_folder_name, f'{field}.npy'), errors[field])
+            np.save(os.path.join(errors_folder_name, f'{field}-ref.npy'), errors[field + '-ref'])
 
         return
 
@@ -2920,10 +3149,11 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
         MODIFY
         """
 
-        ERRORS_folder_name = os.path.join(self.M_results_path, 'mean_errors')
+        ERRORS_folder_name = os.path.join(self.M_results_path, 'avg_errors')
         gen_utils.create_dir(ERRORS_folder_name)
-        np.savetxt(os.path.join(ERRORS_folder_name, 'velocity.txt'), self.M_relative_error['velocity'])
-        np.savetxt(os.path.join(ERRORS_folder_name, 'pressure.txt'), self.M_relative_error['pressure'])
+
+        for field in set(self.M_valid_fields) - {'lambda'}:
+            np.save(os.path.join(ERRORS_folder_name, f'{field}.npy'), self.M_relative_error[field])
 
         np.savetxt(os.path.join(self.M_results_path, 'online_time.txt'), np.array([self.M_online_mean_time]))
 
@@ -2950,7 +3180,6 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
         plt.set_loglevel("warning")
 
         def __setup_axs(_axs, _title=None):
-            _axs.set_xticks(windows, labels=[f"{elem:.2f}" for elem in windows])
             _axs.grid(which='major', linestyle='-', linewidth=1)
             _axs.grid(which='minor', linestyle='--', linewidth=0.5)
             if _title is not None and type(_title) is str:
@@ -2963,8 +3192,8 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
         for i in range(self.M_n_inlets):
             cur_axs = axs if self.M_n_inlets == 1 else axs[i]
             cur_axs.plot(times, -inflow_rates[i])
-            # if len(windows) > 1:
-            #     cur_axs.vlines(windows, np.min(-inflow_rates[i]), np.max(-inflow_rates[i]), 'r', linestyles='dashdot')
+            if len(windows) > 1:
+                cur_axs.vlines(windows, np.min(-inflow_rates[i]), np.max(-inflow_rates[i]), 'r', linestyles='dashdot')
             __setup_axs(cur_axs, _title=f"Inflow {i}")
         plt.savefig(os.path.join(folder_flows, f'inflows.eps'), format='eps', dpi=300)
         plt.close()
@@ -2973,8 +3202,8 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
         for i in range(self.M_n_outlets):
             cur_axs = axs if self.M_n_outlets == 1 else axs[i]
             cur_axs.plot(times, outflow_rates[i])
-            # if len(windows) > 1:
-            #     cur_axs.vlines(windows, np.min(outflow_rates[i]), np.max(outflow_rates[i]), 'r', linestyles='dashdot')
+            if len(windows) > 1:
+                cur_axs.vlines(windows, np.min(outflow_rates[i]), np.max(outflow_rates[i]), 'r', linestyles='dashdot')
             __setup_axs(cur_axs, _title=f"Outflow {i}")
         plt.savefig(os.path.join(folder_flows, f'outflows.eps'), format='eps', dpi=300)
         plt.close()
@@ -2984,8 +3213,8 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
         axs.plot(times, np.sum(-np.array(inflow_rates), axis=0), label="Inflow")
         axs.plot(times, np.sum(np.array(outflow_rates), axis=0), label='Outflow')
         axs.plot(times, delta_Q, label='Delta')
-        # if len(windows) > 1:
-        #     axs.vlines(windows, np.min(outflow_rates[i]), np.max(outflow_rates[i]), 'k', linestyles='dashdot')
+        if len(windows) > 1:
+            axs.vlines(windows, np.min(outflow_rates[i]), np.max(outflow_rates[i]), 'k', linestyles='dashdot')
         __setup_axs(axs, _title=f"Flow difference")
         axs.legend()
         plt.savefig(os.path.join(folder_flows, f'flow_diff.eps'), format='eps', dpi=300)
@@ -2993,7 +3222,7 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
 
         return
 
-    def _compute_error_field(self, sol, sol_true, field, error_norm=None):
+    def _compute_error_field(self, sol, sol_true, field):
         """
         Compute the error field for a given field
         """
@@ -3001,11 +3230,10 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
         error = sol - sol_true
         error = self.compute_norm(error, field=field)
         denom = self.compute_norm(sol_true, field=field)
-        error_l2 = np.sqrt(np.sum(np.square(error))) / np.sqrt(np.sum(np.square(denom)))
+        error_l2 = np.linalg.norm(error) / np.linalg.norm(denom)
 
-        norm_str = error_norm + "-l2" if error_norm is not None else "l2"
-        logger.info(f"{field} {norm_str} absolute error: {np.sqrt(np.sum(np.square(error))):.2e}")
-        logger.info(f"{field} {norm_str} relative error: {error_l2:.2e}")
+        logger.info(f"{field} absolute error: {np.linalg.norm(error):.2e}")
+        logger.info(f"{field} relative error: {error_l2:.2e}")
 
         return error, denom, error_l2
 
@@ -3019,46 +3247,41 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
         """
 
         if sol is not None:
-            assert type(sol) is dict and {'velocity', 'pressure', 'lambda'}.issubset(sol.keys()), "Invalid solution format"
+            assert type(sol) is dict and set(self.M_valid_fields).issubset(sol.keys()), "Invalid solution format"
         else:
             sol = self.M_utildeh
 
         if not self.check_norm_matrices():
             self.get_norm_matrices()
 
+        errors = dict()
+
         snapshots_path = self.M_test_snapshots_path if is_test else self.M_snapshots_path
+        is_h5 = os.path.isfile(os.path.join(snapshots_path, f'param{param_nb}', 'block0.h5'))
 
-        snap = self._load_snapshot_file(os.path.join(snapshots_path, f'param{param_nb}'), 'velocity',
-                                        save=False, remove=False)[:self.M_Nt][ss_ratio-1::ss_ratio].T
-        error_H1, denom_H1, error_H1_l2 = self._compute_error_field(sol['velocity'], snap, 'velocity',
-                                                                    error_norm='H1')
+        for k,field in enumerate(set(self.M_valid_fields) - {"lambda"}):
+            remove = not is_h5 or k == len(self.M_valid_fields) - 2
+            snap = self._load_snapshot_file(os.path.join(snapshots_path, f'param{param_nb}'), field,
+                                            save=True, remove=remove)[0][ss_ratio-1::ss_ratio].T
+            error, denom, error_l2 = self._compute_error_field(sol[field], snap, field)
 
-        snap_p = self._load_snapshot_file(os.path.join(snapshots_path, f'param{param_nb}'), 'pressure',
-                                          save=False, remove=False)[:self.M_Nt][ss_ratio-1::ss_ratio].T
-        error_L2, denom_L2, error_L2_l2 = self._compute_error_field(sol['pressure'], snap_p, 'pressure',
-                                                                    error_norm='L2')
+            errors[field] = np.array(error)
+            errors[field + '-ref'] = np.array(denom)
+            errors[field + '-l2'] = error_l2
 
-        errors_l2, denoms_l2, errors_l2_l2 = [], [], []
+        errors_l, denoms_l, errors_l_l2 = [], [], []
         for n in range(self.M_n_coupling):
             snap_lambda = self._load_snapshot_file(os.path.join(snapshots_path, f'param{param_nb}'), f'lambda{n}',
-                                                   save=False, remove=False)[:self.M_Nt][ss_ratio-1::ss_ratio].T
-            error_l2, denom_l2, error_l2_l2 = self._compute_error_field(sol['lambda'][n], snap_lambda, f'lambda{n}',
-                                                                        error_norm='l2')
+                                                   save=True, remove=True)[0][ss_ratio-1::ss_ratio].T
+            error, denom, error_l2 = self._compute_error_field(sol['lambda'][n], snap_lambda, f'lambda{n}')
 
-            errors_l2.append(error_l2)
-            denoms_l2.append(denom_l2)
-            errors_l2_l2.append(error_l2_l2)
+            errors_l.append(error)
+            denoms_l.append(denom)
+            errors_l_l2.append(error_l2)
 
-        errors = dict()
-        errors['velocity'] = np.array(error_H1)
-        errors['velocity-ref'] = np.array(denom_H1)
-        errors['velocity-l2'] = error_H1_l2
-        errors['pressure'] = np.array(error_L2)
-        errors['pressure-ref'] = np.array(denom_L2)
-        errors['pressure-l2'] = error_L2_l2
-        errors['lambda'] = np.array(errors_l2)
-        errors['lambda-ref'] = np.array(denoms_l2)
-        errors['lambda-l2'] = np.array(errors_l2_l2)
+        errors['lambda'] = np.array(errors_l)
+        errors['lambda-ref'] = np.array(denoms_l)
+        errors['lambda-l2'] = np.array(errors_l_l2)
 
         return errors
 
@@ -3102,8 +3325,6 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
         return
 
     def check_dataset(self, _nsnap):
-
-        # TODO: incorporate resistance BCs
 
         if arr_utils.is_empty(self.M_snapshots_matrix['velocity']):
             self.import_snapshots_matrix(_nsnap)

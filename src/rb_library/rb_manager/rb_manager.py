@@ -1272,9 +1272,8 @@ class RbManager:
             try:
                 assert 0 <= _snapshot_number < self.M_offline_ns_parameters.shape[0]
             except AssertionError:
-                logger.critical(f"Invalid index {_snapshot_number}. Number of stored snapshots: "
-                                f"{self.M_offline_ns_parameters.shape[0]}")
-                raise IndexError
+                raise IndexError(f"Invalid index {_snapshot_number}. Number of stored snapshots: "
+                                 f"{self.M_offline_ns_parameters.shape[0]}")
 
             self.solve_reduced_problem(self.M_offline_ns_parameters[_snapshot_number, :])
             if self.M_solver_converged:
@@ -1283,8 +1282,8 @@ class RbManager:
                 error = self.M_utildeh
                 error = error - self.M_snapshots_matrix[:, _snapshot_number]
 
-                norm_of_error = self.compute_norm(error)["L2"] / \
-                                self.compute_norm(self.M_snapshots_matrix[:, _snapshot_number])["L2"]
+                norm_of_error = (self.compute_norm(error)["L2"] /
+                                 self.compute_norm(self.M_snapshots_matrix[:, _snapshot_number])["L2"])
                 logger.info("The L2-norm of the error for snapshot %d is %e" % (_snapshot_number, norm_of_error))
             else:
                 norm_of_error = np.nan
@@ -1317,9 +1316,8 @@ class RbManager:
             try:
                 assert 0 <= _snapshot_number < self.M_test_offline_ns_parameters.shape[0]
             except AssertionError:
-                logger.critical(f"Invalid index {_snapshot_number}. Number of stored test snapshots: "
-                                f"{self.M_test_offline_ns_parameters.shape[0]}")
-                raise IndexError
+                raise IndexError(f"Invalid index {_snapshot_number}. Number of stored test snapshots: "
+                                 f"{self.M_test_offline_ns_parameters.shape[0]}")
 
             self.solve_reduced_problem(self.M_test_offline_ns_parameters[_snapshot_number, :])
             if self.M_solver_converged:

@@ -1,6 +1,6 @@
 # STRB4hemo
 This repository provides a Python-based implementation of space-time reduced basis (ST-RB) solvers 
-for hemodynamic problems. Specifically, it allows to use ST-RB to solve the following problems:
+for hemodynamics problems. Specifically, it allows to use ST-RB to solve the following problems:
 * Stokes problem
 * Navier-Stokes problem
 * Coupled momentum problem (reduced fluid-structure interaction), defined in 
@@ -41,14 +41,41 @@ python main.py
 ```
 
 The source code is located in the `src` folder. In particular, the ST-RB solvers for the
-hemodynamic problems tackled in the reference paper can be found at
+hemodynamics problems tackled in the reference paper can be found at
 `src/rb_library/rb_manager/space_time`.
 
+## Citation
+
+If you use this code in your research, please cite the following papers:
+- [Space-time reduced basis methods for parametrized unsteady Stokes equations](https://epubs.siam.org/doi/full/10.1137/22M1509114?casa_token=DdhxqGXg1fAAAAAA%3A6TqrGssiy3fbHkblG1Uko-yH92oVaLlal08ji_AmccGrEqTsmL8dfurpHkLGlRL9u5Wv1V98_0M) 
+  by R.Tenderini, N.Mueller, and S.Deparis (2024).
+```bibtex
+@article{tenderini2024space,
+  title={Space-time reduced basis methods for parametrized unsteady Stokes equations},
+  author={Tenderini, Riccardo and Mueller, Nicholas and Deparis, Simone},
+  journal={SIAM Journal on Scientific Computing},
+  volume={46},
+  number={1},
+  pages={B1--B32},
+  year={2024},
+  publisher={SIAM}
+}
+```
+- [Model order reduction of hemodynamics by space-time reduced basis and reduced fluid-structure 
+interaction](https://arxiv.org/abs/2505.00548) by R.Tenderini and S.Deparis (2025).
+```bibtex
+@article{tenderini2025model,
+  title={Model order reduction of hemodynamics by space-time reduced basis and reduced fluid-structure interaction},
+  author={Tenderini, Riccardo and Deparis, Simone},
+  journal={arXiv preprint arXiv:2505.00548},
+  year={2025}
+}
+```
 ## License
 This project is licensed under the [BSD 3-Clause License](LICENSE).
 
 ## Credits
 The code builds upon previous implementations of the RB method for steady elliptic problems,
 written by [Luca Pegolotti](https://www.researchgate.net/profile/Luca_Pegolotti) and 
-[Niccolo' Dal Santo](https://www.researchgate.net/profile/Niccolo_Dal_Santo) 
+[Niccolò Dal Santo](https://www.researchgate.net/profile/Niccolo_Dal_Santo) 
 at [EPFL](https://www.epfl.ch/en/).

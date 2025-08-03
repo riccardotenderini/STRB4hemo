@@ -91,6 +91,7 @@ def execute():
     my_rb_manager.set_parametrizations(config.parametrizations)
     my_rb_manager.use_LU = config.use_LU
     my_rb_manager.N_periods = config.N_periods
+    my_rb_manager.Nt_IC = config.Nt_IC
 
     my_rb_manager.set_newton_specifics(config.newton_specs)
 
@@ -145,7 +146,8 @@ def execute():
         my_rb_manager.build_rb_approximation(config.n_snapshots, **specs)
 
         if config.reduction_method in {'ST-RB', 'ST-PGRB'}:
-            my_rb_manager.test_rb_solver(config.test_param_nbs, ss_ratio=config.time_subsample_ratio,
+            my_rb_manager.test_rb_solver(config.test_param_nbs,
+                                         ss_ratio=config.time_subsample_ratio,
                                          compute_IG_error=config.compute_IG_error)
         elif config.reduction_method == 'SRB-TFO':
             my_rb_manager.test_time_marching(config.test_param_nbs, ss_ratio=config.time_subsample_ratio)
