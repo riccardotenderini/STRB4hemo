@@ -6,8 +6,9 @@ for hemodynamics problems. Specifically, it allows to use ST-RB to solve the fol
 * Coupled momentum problem (reduced fluid-structure interaction), defined in 
   [Figueroa et al. (2006)](https://www.sciencedirect.com/science/article/abs/pii/S004578250500513X)
 
-This is the reference repository for the paper: 
-[Model order reduction of hemodynamics by space-time reduced basis and reduced fluid-structure 
+This is the reference repository for the following papers: 
+  * [Space-time reduced basis methods for parametrized unsteady Stokes equations](https://epubs.siam.org/doi/full/10.1137/22M1509114?casa_token=8gTtT37emsoAAAAA:7W1EQSPnDxM5LcLok5icCwnwfUR5F9XsWLtfr_ZK1aQozxR5mm1teGDQjM-h3cD522inRPWE5Tw&casa_token=TRTtydhDGR8AAAAA:ie1HJGZIwfSN-jA7nLBSkc11fpEH1soQe0qdujUC1mTthvrr9BnhZd8x4RFd2pTV9Lhc2UyBqR8) by R.Tenderini, N.Mueller, S.Deparis (2024).
+  * [Model order reduction of hemodynamics by space-time reduced basis and reduced fluid-structure 
 interaction](https://arxiv.org/abs/2505.00548) by R.Tenderini and S.Deparis (2025).
 
 ## Installation
@@ -79,3 +80,8 @@ The code builds upon previous implementations of the RB method for steady ellipt
 written by [Luca Pegolotti](https://www.researchgate.net/profile/Luca_Pegolotti) and 
 [Niccolò Dal Santo](https://www.researchgate.net/profile/Niccolo_Dal_Santo) 
 at [EPFL](https://www.epfl.ch/en/).
+
+## Funding
+This work was funded by the *Swiss National Science Foundation*, 
+[grant agreement No 200021_197021](https://data.snf.ch/grants/grant/197021), 
+"Data--driven approximation of hemodynamics by combined reduced order modeling and deep neural networks".
