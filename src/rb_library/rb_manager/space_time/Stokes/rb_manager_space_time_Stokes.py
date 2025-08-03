@@ -2315,7 +2315,7 @@ class RbManagerSpaceTimeStokes(rbmst.RbManagerSpaceTime):
                 self.set_param_functions()
                 self.build_reduced_problem(_param)  # rebuild parameter-dependent terms
             else:
-                self.build_rb_RHS()  # rebuild only the RHS vector, potentially changed after IC update
+                self.build_rb_RHS(_param)  # rebuild only the RHS vector, potentially changed after IC update
 
             logger.debug(f"Cycle {n} - Value of T: {self.dt*Nt:.2e}")
             status = self._solve(_param=_param)
